@@ -35,15 +35,15 @@ OpenNOW PS5 lets you sign in to NVIDIA, browse the GeForce NOW catalog, and stre
 
 **[Open Cloud Gaming releases](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases)** is the download location for new versions. Development, issues, and pull requests now live in **[OpenCloudGaming/OpenNOW-PS5](https://github.com/OpenCloudGaming/OpenNOW-PS5)**.
 
-The first release in this repository is pending. Until it is published, the **[legacy 0.0.7 prerelease](https://github.com/Portablelle/OpenNOW-PS5/releases/tag/0.0.7)** remains available from the previous repository. Download `OpenNOW-PS5-0.0.7.zip` and `SHA256SUMS` from that release's Assets section. The manifest and source archive are also available there.
+The latest release is **[0.2.0](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases/tag/0.2.0)**, with native content version `00.002.046`. Download `OpenNOW-PS5-0.2.0.zip` and `SHA256SUMS` from that release's Assets section. The manifest is also there.
 
-Legacy releases come from a separate development history. They do **not** include this repository's newer signaling and sandbox-login fixes, and their controls and setup can differ. Follow the notes attached to the version you download. A matching PS5 content-version number does not mean that two packages contain the same code.
+Older releases, up to 0.1, are still available from the [previous repository](https://github.com/Portablelle/OpenNOW-PS5/releases). They come from a separate development history. They do **not** include this repository's newer signaling and sandbox-login fixes, and their controls and setup can differ. Follow the notes attached to the version you download. A matching PS5 content-version number does not mean that two packages contain the same code.
 
 ## What works
 
 - NVIDIA device-code sign-in, saved login, and automatic credential renewal.
 - Separate account Library and Browse sections, real cover art, search, session allocation, and cancellation.
-- Native H.264 and HEVC Main10 video decoding, GPU presentation, and negotiated Opus audio.
+- Native H.264 and HEVC Main10 video decoding, GPU presentation, and stereo Opus audio.
 - DualSense gamepad input, touchpad mouse controls, and an in-game keyboard.
 - Streaming presets and custom resolution, FPS, bitrate, codec, and hardware/software decoding settings.
 - Bounded on-disk artwork caching that survives app restarts.
@@ -57,14 +57,14 @@ One recorded console test received and presented a 3840 × 2160 Main10 SDR strea
 - Sustained **120 FPS gameplay and real HDR source content are not validated**. A selected profile or HDMI output mode is not proof of the stream's actual format or frame rate.
 - The server can supply a different frame rate, bitrate, or dynamic range from the requested profile. Some earlier 90 FPS requests received 60 FPS.
 - The deeper decode pipeline applies to qualified UHD Main10. H.264 still uses depth one.
-- Stereo is the audio default. Auto, 5.1, and 7.1 requests and multichannel decoding need live console acceptance; an eight-channel AudioOut port does not verify your speaker or receiver layout. Broader game, display, firmware, and loader compatibility needs testing.
+- Audio is stereo only. Surround (5.1 and 7.1) is turned off for now. Broader game, display, firmware, and loader compatibility needs testing.
 - Software decoding supports H.264 SDR only. Hardware H.264 and HEVC Main10 modes are offered only after startup qualification. AV1 is not implemented; the current [PS5_Vulkan video limitations](https://github.com/mihawk-99/PS5_Vulkan/blob/f3cbf875f89978deae9f855b9be2610cec2818ae/docs/CTS_GAPS.md) do not provide an alternative decoder.
 
 ## Install
 
 You need a compatible native-homebrew PS5 environment, a GeForce NOW account with access to the games and streaming modes you want, and a suitable display. This is a **directory package**, not a retail PKG installer.
 
-1. Download the application ZIP and `SHA256SUMS` from the [release page](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases). If no release is available there yet, use the legacy link above and read its version-specific instructions.
+1. Download the application ZIP and `SHA256SUMS` from the [release page](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases) and read the notes for that version.
 2. Run `sha256sum <downloaded-file.zip>` on Linux or `shasum -a 256 <downloaded-file.zip>` on macOS. Compare the result with the ZIP's entry in `SHA256SUMS`.
 3. Close OpenNOW before replacing an installation. Keep a backup outside directories scanned by the loader, so a duplicate title ID cannot become the registered installation.
 4. Extract the archive and install the complete `PPSA99082` folder through a compatible native homebrew directory loader, such as ShadowMountPlus. Follow the loader's registration procedure and make sure another app does not use that title ID.
