@@ -15,7 +15,6 @@ namespace opennow {
 class Media {
 public:
  bool start(const StreamSettings& = {},unsigned audioChannels=2) noexcept;
- static unsigned availableAudioChannels() noexcept;
  bool configureAudio(const audio::Format&) noexcept;
  unsigned audioCapacity() const noexcept {return audioOutput_.channels();}
  void stop() noexcept;

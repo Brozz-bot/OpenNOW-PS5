@@ -143,14 +143,18 @@ inline Format selectFormat(const std::string &offer, unsigned maximum)
             for (const auto &field : split(line, ' '))
                 if (!field.empty())
                     fields.push_back(field);
-            inAudio = !fields.empty() && fields[0] == "m=audio";
+            const bool audioLine = !fields.empty() && fields[0] == "m=audio";
+            inAudio = audioLine && ++audioSections == 1;
             unsigned port = 0;
             if (fields.size() < 4 || !integer(fields[1], port) || port > 65535)
                 return {};
+            if (audioLine && !inAudio)
+            {
+                ++mediaIndex;
+                continue;
+            }
             if (inAudio)
             {
-                if (++audioSections > 1)
-                    return {};
                 activeAudio = port != 0;
                 canSend = sessionCanSend;
                 audioIndex = mediaIndex;

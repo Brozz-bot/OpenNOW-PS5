@@ -354,8 +354,7 @@ std::string AdaptAnswerSdpToOffer(
     const opennow::StreamSettings& settings,const audio::Format* selectedAudio)
 {
     if(CountSdpLinesWithPrefix(offer_sdp,"m=video ")!=1||
-       CountSdpLinesWithPrefix(answer_sdp,"m=video ")!=1||
-       CountSdpLinesWithPrefix(offer_sdp,"m=audio ")>1)return {};
+       CountSdpLinesWithPrefix(answer_sdp,"m=video ")!=1)return {};
     const bool hevc=settings.codec()==VideoCodec::hevc;
     const int h264_payload_type = hevc?SelectOfferHevcPayloadType(offer_sdp,settings.tenBit()):SelectOfferH264PayloadType(offer_sdp);
     if(!h264_payload_type)return {};
