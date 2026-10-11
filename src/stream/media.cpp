@@ -32,7 +32,6 @@ void decoderLog(void*,int level,const char* format,va_list args){
 }
 }
 
-unsigned Media::availableAudioChannels() noexcept {return audio::Output::probeCapacity();}
 void Media::updateAudioStats() noexcept {
  const auto stats=audioReceiver_.stats();
  audioPackets=stats.packets;audioErrors=stats.errors;audioRecovered=stats.recovered;audioConcealed=stats.concealed;

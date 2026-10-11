@@ -201,10 +201,18 @@ int main() {
             *fail=false;assert(stream.start(launch,"test"));outbound.clear();queuePayload("sdp",offered.c_str());stream.tick(1000000);
             assert(stream.failed()&&std::strstr(stream.status(),"configure offered audio"));clean();*fail=true;
         }
-        for(const auto& invalid:{std::string("m=video 9 RTP/AVP 107\r\na=rtpmap:107 H264/90000\r\nm=audio 9 RTP/AVP 107\r\na=rtpmap:107 opus/48000/2\r\n"),
-                                offered+"m=audio 9 RTP/AVP 111\r\na=rtpmap:111 opus/48000/2\r\n"}){
+        {
+            const auto invalid=std::string("m=video 9 RTP/AVP 107\r\na=rtpmap:107 H264/90000\r\nm=audio 9 RTP/AVP 107\r\na=rtpmap:107 opus/48000/2\r\n");
             assert(stream.start(launch,"test"));queuePayload("sdp",invalid.c_str());stream.tick(1000000);
             assert(stream.failed()&&std::strstr(stream.status(),"supported audio"));clean();
+        }
+        {
+            const auto microphone=offered+"a=mid:0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:3\r\na=rtpmap:111 opus/48000/2\r\na=recvonly\r\n";
+            launch=session();
+            assert(stream.start(launch,"test"));outbound.clear();queuePayload("sdp",microphone.c_str());stream.tick(1000000);
+            assert(!stream.failed()&&configuredAudio.channels==2&&selectedAudioPayload==107&&selectedRedPayload==-1);
+            assert(std::any_of(outbound.begin(),outbound.end(),[](const auto& text){return text.find("opus/48000/2")!=std::string::npos;}));
+            stream.stop();clean();
         }
         launch=session();launch.audioChannels=8;assert(!stream.start(launch,"test"));clean();launch=session();
     }

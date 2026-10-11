@@ -32,7 +32,9 @@ int main() {
       "num_streams=4294967295;coupled_streams=7;channel_mapping=0,4,1,2,3,5",
       "num_streams=3;coupled_streams=2;channel_mapping=0,4,1,2,3,5"})
   assert(audio::selectFormat(stereo+"a=rtpmap:112 multiopus/48000/6\r\na=fmtp:112 "+params+"\r\n",8).channels==2);
- assert(!audio::selectFormat(stereo+"m=audio 9 RTP/AVP 112\r\n"+five,8).channels);
+ const auto microphone="m=audio 9 RTP/AVP 112\r\na=mid:3\r\n"+five+"a=recvonly\r\n";
+ const auto withMicrophone=audio::selectFormat(stereo+microphone,8);
+ assert(withMicrophone.channels==2&&withMicrophone.payload==111&&withMicrophone.redPayload==63&&withMicrophone.mid=="audio");
  assert(!audio::selectFormat("m=audio 0 RTP/AVP 112\r\n"+five+stereo,8).channels);
  assert(!audio::selectFormat("m=audio 0 RTP/AVP 111\r\na=rtpmap:111 opus/48000/2\r\n",8).channels);
  assert(!audio::selectFormat(stereo+"a=recvonly\r\n",8).channels);
@@ -49,7 +51,10 @@ int main() {
  assert(!audio::selectFormat(collision,2).channels);
  assert(sdp::AdaptAnswerSdpToOffer(video+stereo,collision,StreamSettings{}).empty());
  const auto chosen=audio::selectFormat(offer,8);
- assert(sdp::AdaptAnswerSdpToOffer(video+stereo,offer+stereo,StreamSettings{},&chosen).empty());
+ const auto stereoChoice=audio::selectFormat(offer+microphone,2);
+ const auto micAnswer=sdp::AdaptAnswerSdpToOffer(video+stereo,offer+microphone,StreamSettings{},&stereoChoice);
+ assert(stereoChoice.channels==2&&micAnswer.find("m=audio 9 UDP/TLS/RTP/SAVPF 111 63")!=std::string::npos);
+ assert(micAnswer.find("m=audio")==micAnswer.rfind("m=audio")&&micAnswer.find("multiopus")==std::string::npos);
  assert(sdp::AdaptAnswerSdpToOffer(video+stereo,offer+video,StreamSettings{},&chosen).empty());
  auto dynamic=audio::selectFormat("m=audio 9 RTP/AVP 107 108\r\na=rtpmap:107 opus/48000/2\r\na=rtpmap:108 red/48000/2\r\na=fmtp:108 107/107\r\n",2);
  assert(dynamic.payload==107&&dynamic.redPayload==108);

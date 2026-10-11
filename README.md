@@ -105,7 +105,7 @@ Hardware H.264 requires fixed-resolution streaming. When switching from an adapt
 
 **Settings → Cover art & cache** controls persistent artwork storage under `/download0/opennow/artwork`. The cache has a 64 MiB budget and at most 128 images, with oldest-access eviction. Larger images can remain memory-only. Turning saving off retains existing disk content; Clear removes only cache files, even while saving is off. It does not remove your login, stream settings, or NVIDIA Library entries.
 
-Development build `00.002.045` adds **Settings → Display & audio → Audio channels**, with Auto, Stereo, 5.1, and 7.1 requests. Options saves every unsaved stream change, including video settings. Older settings migrate to Stereo without changing video or cache preferences. The server determines the negotiated format and can provide stereo instead. See [the original PS5 upstream audit](docs/PS5_UPSTREAM_SYNC.md) for the imported functionality and verification limits.
+Development build `00.002.046` streams audio in stereo only. The 5.1 and 7.1 selector from `00.002.045` is turned off for now, and **Settings → Display & audio** shows stereo as a fixed value. A saved Auto, 5.1, or 7.1 choice is kept in the settings file but requests stereo. Sessions now start when NVIDIA's offer includes a separate microphone audio section; `00.002.045` rejected those offers with "Server did not offer supported audio". See [the original PS5 upstream audit](docs/PS5_UPSTREAM_SYNC.md) for the imported functionality and verification limits.
 
 ## Privacy and saved login
 

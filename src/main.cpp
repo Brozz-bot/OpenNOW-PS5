@@ -65,7 +65,7 @@ opennow::StreamSettings publishedLaunch{};
 bool artworkWanted=true;
 opennow::ui::SettingsInfo publishedSettings;
 opennow::ui::AudioInfo publishedAudio;
-unsigned audioCapacity=2;
+constexpr unsigned audioCapacity=2;
 pthread_mutex_t viewMutex=PTHREAD_MUTEX_INITIALIZER;
 std::atomic_int command{0};
 opennow::Http* activeHttp=nullptr; // Set before UI loop; lifetime is the process.
@@ -574,11 +574,6 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                     if((pressed&PS5_PAD_BUTTON_UP)&&settingsRow>0)--settingsRow;
                     if((pressed&PS5_PAD_BUTTON_DOWN)&&settingsRow+1<rows)++settingsRow;
                     if(settingsPane==SettingsPane::stream)editStream(pressed,caps);
-                    else if(settingsPane==SettingsPane::display) {
-                        const int direction=(pressed&PS5_PAD_BUTTON_RIGHT)?1:(pressed&PS5_PAD_BUTTON_LEFT)?-1:0;
-                        if(direction)draft.audio_mode=static_cast<opennow::audio::Mode>(std::clamp(static_cast<int>(draft.audio_mode)+direction,0,static_cast<int>(opennow::audio::Mode::surround71)));
-                        draftCommands(pressed);
-                    }
                     else if(settingsPane==SettingsPane::cache) {
                         if(settingsRow==0&&(pressed&(PS5_PAD_BUTTON_LEFT|PS5_PAD_BUTTON_RIGHT)))setArtwork(pressed&PS5_PAD_BUTTON_RIGHT);
                         if(settingsRow==0&&(pressed&PS5_PAD_BUTTON_CROSS))setArtwork(!artworkWanted);
@@ -771,9 +766,8 @@ int main() {
         section=Section::settings;
         publishedSettings.saved=true;
         if(name=="settings-stream"){settingsContent=true;settingsRow=0;}
-        if(name.rfind("settings-display",0)==0){settingsPane=SettingsPane::display;publishedAudio={8,0,0,false};}
-        if(name=="settings-display-audio"){settingsContent=true;draft.audio_mode=opennow::audio::Mode::surround51;publishedAudio={8,8,2,true};}
-        if(name=="settings-display-negotiated")publishedAudio={8,8,2,false};
+        if(name.rfind("settings-display",0)==0)settingsPane=SettingsPane::display;
+        if(name=="settings-display-negotiated")publishedAudio={2,2,2,false};
         if(name=="settings-account"||name=="settings-signout"){settingsPane=SettingsPane::account;settingsContent=true;}
         if(name=="settings-signout")confirmSignOut=true;
         if(name=="settings-about")settingsPane=SettingsPane::about;
@@ -835,8 +829,6 @@ int main() {
 #else
     storageError=opennow::appStorage::initialize();
     opennow::gpu::initialize();
-    audioCapacity=opennow::Media::availableAudioChannels();
-    publishedAudio.capacity=audioCapacity;
     sceNetInit(); sceUserServiceInitialize(nullptr); scePadInit();
     activeHttp=new opennow::Http;
     static opennow::art::Cache cache(opennow::art::httpsFetch,nullptr,storageError?nullptr:OPENNOW_ARTWORK_CACHE_PATH);

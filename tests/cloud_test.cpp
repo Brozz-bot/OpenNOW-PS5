@@ -53,10 +53,11 @@ int main(){
     const auto* request=cJSON_GetObjectItemCaseSensitive(root,"sessionRequestData");
     const auto* features=cJSON_GetObjectItemCaseSensitive(request,"requestedStreamingFeatures");
     assert(cJSON_GetObjectItemCaseSensitive(features,"audioChannelCount")->valueint==static_cast<int>(channels));
-    assert(cJSON_GetObjectItemCaseSensitive(request,"requestedAudioFormat")->valueint==(channels==8?3:channels==6?2:1));
+    const auto* format=cJSON_GetObjectItemCaseSensitive(request,"requestedAudioFormat");
+    assert(channels==2?!format:format->valueint==(channels==8?3:2));
     bool found=false;const auto* metadata=cJSON_GetObjectItemCaseSensitive(request,"metaData");
     for(const auto* item=metadata->child;item;item=item->next){const auto* key=cJSON_GetObjectItemCaseSensitive(item,"key");if(!std::strcmp(key->valuestring,"surroundAudioInfo")){found=true;assert(std::to_string(channels)==cJSON_GetObjectItemCaseSensitive(item,"value")->valuestring);}}
-    assert(found);cJSON_Delete(root);client.tick("fixture-jwt","fixture-device",4);assert(client.session().audioChannels==channels);
+    assert(found==(channels>2));cJSON_Delete(root);client.tick("fixture-jwt","fixture-device",4);assert(client.session().audioChannels==channels);
     assert(client.stop("fixture-jwt","fixture-device")&&client.session().audioChannels==2);
    }
   }

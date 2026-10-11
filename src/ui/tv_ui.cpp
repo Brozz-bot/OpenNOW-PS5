@@ -1058,20 +1058,8 @@ void displayPane(Canvas& c, const Model& m, float x, float w) {
     for(const auto& [on,text]:{std::pair{m.caps.hevcHdr,"HEVC Main10 HDR"},std::pair{m.caps.hevcSdr,"HEVC Main10"},std::pair{m.caps.h264Hardware,"H.264"}})
         if(on)std::snprintf(codecs+std::strlen(codecs),sizeof(codecs)-std::strlen(codecs),"%s%s",*codecs?" \xC2\xB7 ":"",text);
     infoRow(c,x,474,w,"Hardware video",*codecs?codecs:"Software decoding only","Modes that passed the startup test streams",94);
-    const auto mode=m.draft.audio_mode;
-    const unsigned capacity=m.audio.capacity, asked=audio::requestedChannels(mode,capacity);
-    settingsRow(c,x,580,w,94,m.settingsContent&&m.settingsRow==0);
-    const float hw=label(c,Face::extrabold,28,x+32,614,"Audio channels",ink);
-    if(mode!=m.defaults.audio_mode)c.disc(x+32+hw+14,614,5,amber);
+    infoRow(c,x,580,w,"Audio channels","Stereo","Surround is turned off for now",94);
     char line[256];
-    if(mode==audio::Mode::automatic)std::snprintf(line,sizeof(line),"Auto asks for the widest layout the startup audio port probe accepted: up to %u channels",capacity);
-    else if(mode==audio::Mode::stereo)std::snprintf(line,sizeof(line),"Asks NVIDIA for 2 channels");
-    else if(asked<(mode==audio::Mode::surround71?8U:6U))std::snprintf(line,sizeof(line),"The startup audio port probe accepted %u channels, so OpenNOW asks for %s",capacity,layoutName(asked));
-    else std::snprintf(line,sizeof(line),"Asks NVIDIA for %u channels. The session can still negotiate stereo.",asked);
-    drawFitted(c,Face::semibold,20,x+32,baselineIn(Face::semibold,20,630,28),line,w-500,dim);
-    const Option o[]={{"Auto",mode==audio::Mode::automatic,false},{"Stereo",mode==audio::Mode::stereo,false},
-                      {"5.1",mode==audio::Mode::surround51,false},{"7.1",mode==audio::Mode::surround71,false}};
-    segmented(c,x+w-16,627,o,4);
     const float cy=684;
     c.roundRectStroke(x,cy,w,198,22,2,hairline);
     label(c,Face::extrabold,18,x+32,cy+30,"LAST SESSION AUDIO",dim,0.14f);
@@ -1092,22 +1080,7 @@ void displayPane(Canvas& c, const Model& m, float x, float w) {
         else if(!a.negotiated)std::snprintf(why,sizeof(why),"Audio wasn\xE2\x80\x99t set up in that session.");
         else if(a.negotiated<a.requested)std::snprintf(why,sizeof(why),"This session negotiated %s instead of the requested layout.",layoutName(a.negotiated));
         else std::snprintf(why,sizeof(why),"This session negotiated the requested layout.");
-        std::snprintf(line,sizeof(line),"%s The startup audio port probe accepted %u channels; that isn\xE2\x80\x99t a check of your speakers or receiver.",why,a.capacity);
-        drawWrapped(c,Face::semibold,20,x+32,cy+122,28,line,w-64,2,muted);
-    }
-    const unsigned dirty=changedRows(m.draft,m.defaults);
-    const char* problem=settingsProblem(m.draft,m.draftAvailable);
-    const Color dot=dirty&&problem?coral:dirty?amber:m.settings.saveError?coral:mint;
-    if(dirty&&problem)std::snprintf(line,sizeof(line),"Can\xE2\x80\x99t save yet \xC2\xB7 %s",problem);
-    else if(dirty==audioBit)std::snprintf(line,sizeof(line),"Unsaved \xC2\xB7 saved with your stream settings \xC2\xB7 Options saves,");
-    else if(dirty)std::snprintf(line,sizeof(line),"%u unsaved stream changes \xC2\xB7 Options saves all of them,",rowCount(dirty));
-    else if(m.settings.saveError)std::snprintf(line,sizeof(line),"Couldn\xE2\x80\x99t save on this PS5 \xC2\xB7 error %d",m.settings.saveError);
-    else std::snprintf(line,sizeof(line),"Saved with your stream settings \xC2\xB7 used when you press Play");
-    c.disc(x+38,914,5,dot);
-    const float fw=label(c,Face::bold,20,x+54,914,line,muted);
-    if(dirty&&!problem) {
-        glyph(c,Glyph::square,x+54+fw+18,914,muted,22);
-        label(c,Face::bold,20,x+54+fw+36,914,dirty==audioBit?"reverts":"reverts all",muted);
+        drawWrapped(c,Face::semibold,20,x+32,cy+122,28,why,w-64,2,muted);
     }
 }
 void settings(Canvas& c, const Model& m) {
@@ -1134,7 +1107,7 @@ void settings(Canvas& c, const Model& m) {
         title("Cover art & cache",m.artworkWanted?"Covers are saved on this PS5, so Library and Browse open fast after a restart.":"Saving is off, so covers download again after each restart.");
         cachePane(c,m,x,w);
     } else if(m.pane==SettingsPane::display) {
-        title("Display & audio","Video output is reported by this PS5. Audio channels are a request to NVIDIA.");
+        title("Display & audio","Video output is reported by this PS5. Audio streams in stereo.");
         displayPane(c,m,x,w);
     } else if(m.pane==SettingsPane::account) {
         title("Account","Your NVIDIA sign-in for GeForce NOW on this PS5.");
@@ -1182,13 +1155,6 @@ void settings(Canvas& c, const Model& m) {
         const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move / change"},{HintKind::glyph,Glyph::cross,nullptr,row==StreamRow::reset?"Reset":"Edit"}};
         const Hint r[]={{canSave?HintKind::optionsMint:HintKind::glyph,Glyph::options,nullptr,"Save"},{HintKind::glyph,Glyph::square,nullptr,"Revert"},back};
         hints(c,l,editable||row==StreamRow::reset?2:1,r,3);
-        return;
-    }
-    if(m.settingsContent&&m.pane==SettingsPane::display) {
-        const bool canSave=changedRows(m.draft,m.defaults)&&!settingsProblem(m.draft,m.draftAvailable);
-        const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move / change"}};
-        const Hint r[]={{canSave?HintKind::optionsMint:HintKind::glyph,Glyph::options,nullptr,"Save"},{HintKind::glyph,Glyph::square,nullptr,"Revert"},back};
-        hints(c,l,1,r,3);
         return;
     }
     if(m.settingsContent) {
@@ -1284,7 +1250,7 @@ const CloudView& catalogFor(Section section,const CloudView& session,const Cloud
 }
 
 unsigned settingsRows(SettingsPane pane) noexcept {
-    return pane==SettingsPane::stream?static_cast<unsigned>(StreamRow::count):pane==SettingsPane::cache?2:pane==SettingsPane::account||pane==SettingsPane::display?1:0;
+    return pane==SettingsPane::stream?static_cast<unsigned>(StreamRow::count):pane==SettingsPane::cache?2:pane==SettingsPane::account?1:0;
 }
 
 unsigned qualifiedPresets(StreamProfile* out, unsigned capacity, bool (*available)(const StreamSettings&)) noexcept {
