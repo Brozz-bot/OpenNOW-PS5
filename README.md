@@ -35,7 +35,7 @@ OpenNOW PS5 lets you sign in to NVIDIA, browse the GeForce NOW catalog, and stre
 
 **[Open Cloud Gaming releases](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases)** is the download location for new versions. Development, issues, and pull requests now live in **[OpenCloudGaming/OpenNOW-PS5](https://github.com/OpenCloudGaming/OpenNOW-PS5)**.
 
-The latest release is **[0.2.0](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases/tag/0.2.0)**, a prerelease with native content version `00.002.046`. Download `OpenNOW-PS5-0.2.0.zip` and `SHA256SUMS` from that release's Assets section. The manifest is also there.
+The latest release is **[0.2.0](https://github.com/OpenCloudGaming/OpenNOW-PS5/releases/tag/0.2.0)**, with native content version `00.002.046`. Download `OpenNOW-PS5-0.2.0.zip` and `SHA256SUMS` from that release's Assets section. The manifest is also there.
 
 Older releases, up to 0.1, are still available from the [previous repository](https://github.com/Portablelle/OpenNOW-PS5/releases). They come from a separate development history. They do **not** include this repository's newer signaling and sandbox-login fixes, and their controls and setup can differ. Follow the notes attached to the version you download. A matching PS5 content-version number does not mean that two packages contain the same code.
 
