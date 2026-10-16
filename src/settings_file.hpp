@@ -13,7 +13,7 @@ struct Saved {
     StreamSettings settings{};
     bool artworkCache=true;
 };
-using Record=std::array<unsigned char,52>;
+using Record=std::array<unsigned char,72>;
 inline std::uint32_t read32(const unsigned char* bytes) noexcept {
     return std::uint32_t(bytes[0])|(std::uint32_t(bytes[1])<<8)|
            (std::uint32_t(bytes[2])<<16)|(std::uint32_t(bytes[3])<<24);
@@ -30,7 +30,7 @@ inline Status load(const char* path,Saved& out) noexcept {
     out=Saved{};
     const int fd=accountFile::open(path,O_RDONLY|O_NOFOLLOW);
     if(fd<0)return errno==ENOENT?Status::missing:Status::unreadable;
-    std::array<unsigned char,53> record{};
+    std::array<unsigned char,73> record{};
     std::size_t offset=0;
     int error=0;
     while(offset<record.size()) {
@@ -42,7 +42,7 @@ inline Status load(const char* path,Saved& out) noexcept {
     }
     if(accountFile::close(fd)!=0&&!error)error=errno;
     if(error){errno=error;return Status::unreadable;}
-    if((offset!=16&&offset!=48&&offset!=52)||std::memcmp(record.data(),"ONST",4)!=0||
+    if((offset!=16&&offset!=48&&offset!=52&&offset!=72)||std::memcmp(record.data(),"ONST",4)!=0||
        read32(record.data()+offset-4)!=checksum(record.data(),offset-4))
         return Status::corrupt;
     const auto version=read32(record.data()+4);
@@ -53,7 +53,7 @@ inline Status load(const char* path,Saved& out) noexcept {
         out.settings.audio_mode=audio::Mode::stereo;
         return Status::loaded;
     }
-    if(!((version==2&&offset==48)||(version==3&&offset==52)))return Status::corrupt;
+    if(!((version==2&&offset==48)||(version==3&&offset==52)||(version==4&&offset==72)))return Status::corrupt;
     const auto hasSettings=read32(record.data()+8);
     const auto artworkCache=read32(record.data()+12);
     const auto mode=read32(record.data()+32);
@@ -70,6 +70,16 @@ inline Status load(const char* path,Saved& out) noexcept {
         static_cast<int>(read32(record.data()+24)),static_cast<int>(read32(record.data()+28)),
         static_cast<VideoMode>(mode),static_cast<QualityMode>(quality),static_cast<NetworkPolicy>(network),
         static_cast<audio::Mode>(audioMode)};
+    if(version==4) {
+        if(read32(record.data()+48)>50||read32(record.data()+52)>50||
+           read32(record.data()+56)>100||read32(record.data()+60)>300||read32(record.data()+64)>1)
+            return Status::corrupt;
+        settings.controller_left_deadzone=static_cast<int>(read32(record.data()+48));
+        settings.controller_right_deadzone=static_cast<int>(read32(record.data()+52));
+        settings.vibration_intensity=static_cast<int>(read32(record.data()+56));
+        settings.mouse_sensitivity=static_cast<int>(read32(record.data()+60));
+        settings.persist_game_settings=read32(record.data()+64)==1;
+    }
     if(validateSettings(settings)!=SettingsError::none)return Status::corrupt;
     out={hasSettings==1,settings,artworkCache==1};
     return Status::loaded;
@@ -79,7 +89,7 @@ inline int save(const char* path,const Saved& saved) noexcept {
     char temporary[1024];
     if(std::snprintf(temporary,sizeof(temporary),"%s.tmp",path)>=static_cast<int>(sizeof(temporary)))return ENAMETOOLONG;
     Record record{'O','N','S','T'};
-    write32(record.data()+4,3);
+    write32(record.data()+4,4);
     write32(record.data()+8,saved.hasSettings?1:0);
     write32(record.data()+12,saved.artworkCache?1:0);
     write32(record.data()+16,static_cast<std::uint32_t>(saved.settings.width));
@@ -90,7 +100,12 @@ inline int save(const char* path,const Saved& saved) noexcept {
     write32(record.data()+36,static_cast<std::uint32_t>(saved.settings.quality));
     write32(record.data()+40,static_cast<std::uint32_t>(saved.settings.network));
     write32(record.data()+44,static_cast<std::uint32_t>(saved.settings.audio_mode));
-    write32(record.data()+48,checksum(record.data(),48));
+    write32(record.data()+48,static_cast<std::uint32_t>(saved.settings.controller_left_deadzone));
+    write32(record.data()+52,static_cast<std::uint32_t>(saved.settings.controller_right_deadzone));
+    write32(record.data()+56,static_cast<std::uint32_t>(saved.settings.vibration_intensity));
+    write32(record.data()+60,static_cast<std::uint32_t>(saved.settings.mouse_sensitivity));
+    write32(record.data()+64,saved.settings.persist_game_settings?1:0);
+    write32(record.data()+68,checksum(record.data(),68));
     const int fd=accountFile::open(temporary,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);
     if(fd<0)return errno;
     int error=accountFile::permissions(fd,0600)==0?0:errno;

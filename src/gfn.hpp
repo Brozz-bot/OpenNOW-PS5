@@ -31,18 +31,29 @@ public:
     bool restore(char (&deviceId)[37], std::uint64_t now) noexcept;
     void begin(const char* deviceId, std::uint64_t now) noexcept;
     void tick(std::uint64_t now) noexcept;
+    void tickAsync(std::uint64_t now, Request refreshRequest, void* refreshContext) noexcept;
+    void finishAsync(std::uint64_t now) noexcept;
+    void stopAsync() noexcept;
     void cancel() noexcept;
     const View& view() const noexcept { return view_; }
-    const char* cloudToken() const noexcept { return view_.state==State::authenticated ? session_.idToken : ""; }
-    ~Login() { erase(); }
+    const char* userId() const noexcept { return view_.profileVerified ? session_.subject : ""; }
+    const char* cloudToken() const noexcept;
+    Login(const Login&) = delete;
+    Login& operator=(const Login&) = delete;
+    ~Login();
 private:
+    struct AsyncRefresh;
+    AsyncRefresh* async_ = nullptr;
+    void publishAsync(std::uint64_t now, bool wait = false) noexcept;
     void erase() noexcept;
     void fail(const char* message, State state = State::failed) noexcept;
     bool acceptTokens(const Response& response, bool refreshing, std::uint64_t now) noexcept;
-    bool verify(std::uint64_t now) noexcept;
+    bool verify(std::uint64_t now, bool refreshing = false) noexcept;
     void refresh(std::uint64_t now) noexcept;
     bool save() noexcept;
     bool forget() noexcept;
+    bool serviceValid(std::uint64_t now) const noexcept;
+    void authenticated(std::uint64_t now) noexcept;
     Request request_;
     void* context_;
     View view_{};
@@ -58,6 +69,10 @@ private:
     } session_;
     const char* sessionPath_ = nullptr;
     std::uint64_t refreshAt_ = 0;
+    std::uint64_t accessExpiresAt_ = 0, serviceExpiresAt_ = 0, serviceWallExpiry_ = 0, now_ = 0;
+    bool serviceJwt_ = false;
+    enum class Persistence { none, save, forget } persistence_ = Persistence::none;
+    bool deferPersistence_ = false;
     bool restoring_ = false;
     std::uint64_t deadline_ = 0, nextPoll_ = 0;
     unsigned interval_ = 5;

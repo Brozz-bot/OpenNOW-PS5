@@ -17,6 +17,9 @@ struct StreamSettings {
  QualityMode quality=QualityMode::original;
  NetworkPolicy network=NetworkPolicy::adaptive;
  audio::Mode audio_mode=audio::Mode::stereo;
+ int controller_left_deadzone=5,controller_right_deadzone=5;
+ int vibration_intensity=100,mouse_sensitivity=100;
+ bool persist_game_settings=true;
  VideoCodec codec() const noexcept {return tenBit()?VideoCodec::hevc:VideoCodec::h264;}
  bool hardware() const noexcept {return mode!=VideoMode::h264Software;}
  bool hdr() const noexcept {return mode==VideoMode::hevcMain10HdrHardware;}
@@ -24,7 +27,7 @@ struct StreamSettings {
  bool operator==(const StreamSettings&) const = default;
 };
 static_assert(std::is_trivially_copyable_v<StreamSettings> && std::is_standard_layout_v<StreamSettings>);
-enum class SettingsError { none, mode, quality, network, dimensions, fps, bitrate, audio };
+enum class SettingsError { none, mode, quality, network, dimensions, fps, bitrate, audio, controller, mouse };
 inline SettingsError validateSettings(const StreamSettings& settings) noexcept {
  if(settings.mode<VideoMode::h264Software||settings.mode>VideoMode::hevcMain10HdrHardware)return SettingsError::mode;
  if(settings.quality<QualityMode::original||settings.quality>QualityMode::clarity)return SettingsError::quality;
@@ -35,6 +38,10 @@ inline SettingsError validateSettings(const StreamSettings& settings) noexcept {
  if(settings.fps<30||settings.fps>(settings.hardware()?120:60))return SettingsError::fps;
  if(settings.bitrate_kbps<4000||settings.bitrate_kbps>100000)return SettingsError::bitrate;
  if(settings.audio_mode<audio::Mode::automatic||settings.audio_mode>audio::Mode::surround71)return SettingsError::audio;
+ if(settings.controller_left_deadzone<0||settings.controller_left_deadzone>50||
+    settings.controller_right_deadzone<0||settings.controller_right_deadzone>50||
+    settings.vibration_intensity<0||settings.vibration_intensity>100)return SettingsError::controller;
+ if(settings.mouse_sensitivity<10||settings.mouse_sensitivity>300)return SettingsError::mouse;
  return SettingsError::none;
 }
 inline StreamSettings settingsFor(StreamProfile profile) {

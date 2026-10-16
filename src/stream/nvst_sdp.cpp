@@ -21,7 +21,7 @@ std::string ExtractSdpValue(const std::string& sdp, const std::string& prefix)
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
         if (line.rfind(prefix, 0) == 0)
-            return line.substr(prefix.size());
+            return audio::trim(line.substr(prefix.size()));
         if (end == std::string::npos)
             break;
         start = end + 1;
@@ -40,6 +40,8 @@ std::string BuildNvstSdp(
     const std::string ice_ufrag = ExtractSdpValue(answer_sdp, "a=ice-ufrag:");
     const std::string ice_pwd = ExtractSdpValue(answer_sdp, "a=ice-pwd:");
     const std::string fingerprint = ExtractSdpValue(answer_sdp, "a=fingerprint:sha-256 ");
+    if (ice_ufrag.empty() || ice_pwd.empty() || fingerprint.empty())
+        return {};
     const auto tuning = video::ResolveQualityTuning(settings.quality);
     const int max_bitrate = std::max(kOfficialMinimumBitrateKbps, settings.bitrate_kbps);
     // Qualified native profiles target the user's stable Ethernet link. A
@@ -68,7 +70,7 @@ std::string BuildNvstSdp(
         "a=vqos.bllFec.enable:0",
         "a=vqos.drc.enable:" + std::to_string(fixed_quality ? 0 : 1),
         "a=video.dx9EnableNv12:1",
-        "a=video.dx9EnableHdr:1",
+        "a=video.dx9EnableHdr:" + std::to_string(settings.hdr() ? 1 : 0),
         "a=vqos.qpg.enable:1",
         "a=vqos.resControl.qp.qpg.featureSetting:7",
         "a=bwe.useOwdCongestionControl:1",
@@ -91,6 +93,7 @@ std::string BuildNvstSdp(
         "a=video.clientViewportWd:" + std::to_string(settings.width),
         "a=video.clientViewportHt:" + std::to_string(settings.height),
         "a=video.maxFPS:" + std::to_string(settings.fps),
+        "a=video.framePacing.pid.minTargetFrameTimeUs:" + std::to_string(std::max(1000, 950000 / std::max(1, settings.fps))),
         "a=video.initialBitrateKbps:" + std::to_string(initial_bitrate),
         "a=video.initialPeakBitrateKbps:" + std::to_string(fixed_quality ? max_bitrate : initial_bitrate),
         "a=vqos.bw.maximumBitrateKbps:" + std::to_string(max_bitrate),
@@ -113,9 +116,6 @@ std::string BuildNvstSdp(
         "a=video.prefilterParams.sharpnessLevel:0",
         "m=audio 0 RTP/AVP",
         "a=msid:audio",
-        "m=mic 0 RTP/AVP",
-        "a=msid:mic",
-        "a=rtpmap:0 PCMU/8000",
         "m=application 0 RTP/AVP",
         "a=msid:input_1",
         "a=ri.partialReliableThresholdMs:" + std::to_string(ri_caps.partial_reliable_threshold_ms),
@@ -126,6 +126,22 @@ std::string BuildNvstSdp(
             std::to_string(ri_caps.partial_reliable_hid_mask),
         "",
     };
+
+    if (settings.fps > 60 && settings.fps <= 120) {
+        std::vector<std::string> high_fps = {
+            "a=vqos.resControl.dfc.useClientFpsPerf:0",
+            "a=bwe.iirFilterFactor:8",
+            "a=video.encoderFeatureSetting:47",
+            "a=video.encoderPreset:6",
+            "a=vqos.maxStreamFpsEstimate:" + std::to_string(settings.fps),
+        };
+        if (settings.fps == 90 || settings.fps == 120) {
+            high_fps.push_back("a=video.fbcDynamicFpsGrabTimeoutMs:" + std::to_string(settings.fps == 90 ? 9 : 6));
+            high_fps.push_back("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:" + std::to_string(settings.fps == 90 ? 11 : 9));
+        }
+        const auto audio = std::find(lines.begin(), lines.end(), "m=audio 0 RTP/AVP");
+        lines.insert(audio, high_fps.begin(), high_fps.end());
+    }
 
     if (fixed_quality) {
         // Protocol attributes cross-checked against OpenNOW-vita's fixed

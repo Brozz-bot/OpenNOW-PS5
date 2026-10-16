@@ -62,12 +62,25 @@ Bytes version2(const settingsFile::Saved& saved) {
     return bytes;
 }
 
-Bytes current(const settingsFile::Saved& saved) {
+Bytes version3(const settingsFile::Saved& saved) {
     auto bytes=version2(saved);
     bytes.resize(44);
     set32(bytes,4,3);
     append32(bytes,static_cast<std::uint32_t>(saved.settings.audio_mode));
     append32(bytes,0);
+    sign(bytes);
+    return bytes;
+}
+
+Bytes current(const settingsFile::Saved& saved) {
+    auto bytes=version3(saved);
+    bytes.resize(48);
+    set32(bytes,4,4);
+    for(auto value:{static_cast<std::uint32_t>(saved.settings.controller_left_deadzone),
+                   static_cast<std::uint32_t>(saved.settings.controller_right_deadzone),
+                   static_cast<std::uint32_t>(saved.settings.vibration_intensity),
+                   static_cast<std::uint32_t>(saved.settings.mouse_sensitivity),
+                   saved.settings.persist_game_settings?1U:0U,0U})append32(bytes,value);
     sign(bytes);
     return bytes;
 }
@@ -90,7 +103,7 @@ void assertRoundtrip(const std::string& path,const settingsFile::Saved& expected
     assert(settingsFile::load(path.c_str(),saved)==settingsFile::Status::loaded);
     assert(saved.hasSettings==expected.hasSettings&&saved.settings==expected.settings&&saved.artworkCache==expected.artworkCache);
     struct stat info{};
-    assert(::stat(path.c_str(),&info)==0&&(info.st_mode&0777)==0600&&info.st_size==52);
+    assert(::stat(path.c_str(),&info)==0&&(info.st_mode&0777)==0600&&info.st_size==72);
     assert(::lstat((path+".tmp").c_str(),&info)==-1&&errno==ENOENT);
 }
 }
@@ -175,8 +188,28 @@ int main() {
     const auto v1=legacy(static_cast<std::uint32_t>(StreamProfile::smooth));
     const settingsFile::Saved custom{true,{1600,900,45,42000,VideoMode::hevcMain10SdrHardware,QualityMode::clarity,NetworkPolicy::fixed},false};
     const auto v2=version2(custom);
-    const auto v3=current(custom);
-    for(const auto& valid:{v1,v2,v3}) {
+    const auto v3=version3(custom);
+    const auto v4=current(custom);
+    for(const auto& bytes:{v2,v3}) {
+        writeRaw(path,bytes);
+        assert(settingsFile::load(path.c_str(),saved)==settingsFile::Status::loaded);
+        assert(saved.settings==custom.settings);
+        assertRoundtrip(path,saved);
+    }
+    for(int left:{0,5,50})for(int right:{0,5,50})for(int intensity:{0,100})for(int sensitivity:{10,100,300})for(bool persist:{false,true}) {
+        auto tuned=custom;
+        tuned.settings.controller_left_deadzone=left;
+        tuned.settings.controller_right_deadzone=right;
+        tuned.settings.vibration_intensity=intensity;
+        tuned.settings.mouse_sensitivity=sensitivity;
+        tuned.settings.persist_game_settings=persist;
+        assertRoundtrip(path,tuned);
+    }
+    for(auto field:{std::pair<std::size_t,std::uint32_t>{48,51},{52,51},{56,101},{60,9},{60,301},{64,2},
+                    {48,0xffffffffU},{52,0xffffffffU},{56,0xffffffffU},{60,0xffffffffU},{64,0xffffffffU}}) {
+        auto bytes=v4;set32(bytes,field.first,field.second);sign(bytes);assertCorrupt(path,bytes);
+    }
+    for(const auto& valid:{v1,v2,v3,v4}) {
         for(std::size_t size=0;size<valid.size();++size)
             assertCorrupt(path,Bytes(valid.begin(),valid.begin()+size));
         auto bytes=valid;
@@ -193,13 +226,13 @@ int main() {
         bytes[0]='X';
         sign(bytes);
         assertCorrupt(path,bytes);
-        for(auto version:{0U,4U,0xffffffffU}) {
+        for(auto version:{0U,5U,0xffffffffU}) {
             bytes=valid;
             set32(bytes,4,version);
             sign(bytes);
             assertCorrupt(path,bytes);
         }
-        for(auto version:{1U,2U,3U}) {
+        for(auto version:{1U,2U,3U,4U}) {
             if(version==valid[4])continue;
             bytes=valid;
             set32(bytes,4,version);
@@ -210,7 +243,7 @@ int main() {
     for(auto profile:{static_cast<std::uint32_t>(StreamProfile::count),1000U,0xffffffffU})
         assertCorrupt(path,legacy(profile));
 
-    for(const auto& valid:{v2,v3}) {
+    for(const auto& valid:{v2,v3,v4}) {
         for(std::size_t offset:{8,12,32,36,40}) {
             const std::uint32_t firstInvalid=offset==32?4:offset==36?3:2;
             for(auto value:{firstInvalid,256U,0x80000000U,0xffffffffU}) {
@@ -222,7 +255,7 @@ int main() {
         }
     }
     struct InvalidField {std::size_t offset;std::uint32_t value;};
-    for(const auto& valid:{v2,v3}) {
+    for(const auto& valid:{v2,v3,v4}) {
         for(auto field:{InvalidField{16,0},{16,318},{16,321},{16,3842},{16,0xffffffffU},{16,0x80000000U},
                         {20,0},{20,178},{20,181},{20,2162},{20,0xffffffffU},{20,0x80000000U},
                         {24,0},{24,29},{24,121},{24,0xffffffffU},{24,0x80000000U},
@@ -272,6 +305,14 @@ int main() {
     settings={};settings.height=2160;invalid.push_back(settings);
     settings={};settings.fps=120;invalid.push_back(settings);
     settings={};settings.bitrate_kbps=100001;invalid.push_back(settings);
+    settings={};settings.controller_left_deadzone=-1;invalid.push_back(settings);
+    settings={};settings.controller_left_deadzone=51;invalid.push_back(settings);
+    settings={};settings.controller_right_deadzone=-1;invalid.push_back(settings);
+    settings={};settings.controller_right_deadzone=51;invalid.push_back(settings);
+    settings={};settings.vibration_intensity=-1;invalid.push_back(settings);
+    settings={};settings.vibration_intensity=101;invalid.push_back(settings);
+    settings={};settings.mouse_sensitivity=9;invalid.push_back(settings);
+    settings={};settings.mouse_sensitivity=301;invalid.push_back(settings);
     for(const auto& bad:invalid)
         for(bool hasSettings:{false,true}) {
             assert(settingsFile::save(path.c_str(),{hasSettings,bad,false})==EINVAL);
@@ -325,5 +366,5 @@ int main() {
     assert(readRaw(account)==Bytes({'t','o','k','e','n'}));
     assert(::unlink(account.c_str())==0);
     assert(::rmdir(root)==0);
-    std::puts("V1/V2 stereo migration, V3 audio/settings/cache/reset, corruption, atomic saves and account isolation passed");
+    std::puts("V1-V3 migration, V4 input/persistence settings, corruption, atomic saves and account isolation passed");
 }

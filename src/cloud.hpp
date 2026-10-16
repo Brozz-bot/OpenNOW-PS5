@@ -2,10 +2,13 @@
 #pragma once
 #include "gfn.hpp"
 #include "stream/stream_settings.hpp"
+struct cJSON;
 namespace opennow {
-struct Game { char id[96]{}, title[160]{}, store[48]{}, art[160]{}, hero[160]{}; bool owned=false; };
+using TrustEndpoint=bool(*)(void*,const char*);
+struct Game { char id[96]{}, title[160]{}, store[48]{}, art[160]{}, hero[160]{}; bool owned=false,supportsPersistence=false; };
 enum class CloudState { idle, loading, catalog, starting, queued, ready, failed };
 enum class CatalogSource { browse, library };
+enum class RecoveryResult { none, pending, conflict, failed };
 constexpr unsigned catalogPageSize=24;
 constexpr unsigned catalogMaxPages=128;
 constexpr unsigned emptyPageSkips=12;
@@ -20,6 +23,7 @@ struct CloudView {
     int setupStep=-1;
     bool hasNext=false;
     bool launchError=false;
+    bool sessionConflict=false;
     Game current{};
     char message[192]{};
 };
@@ -29,11 +33,12 @@ struct Session {
     SignalingSource signalingSource=SignalingSource::none;
     StreamSettings settings{};
     unsigned audioChannels=2;
+    bool recovered=false;
 };
 static_assert(std::is_trivially_copyable_v<Session> && std::is_standard_layout_v<Session>);
 class Cloud {
 public:
-    Cloud(Request r,void* c):request_(r),context_(c){}
+    Cloud(Request r,void* c,TrustEndpoint trust=nullptr):request_(r),context_(c),trust_(trust){}
     void load(const char* jwt,const char* device,const char* search="",bool next=false) noexcept;
     void loadPage(CatalogSource source,unsigned page,const char* jwt,const char* device,int direction=1) noexcept;
     void select(int delta) noexcept;
@@ -41,12 +46,14 @@ public:
     void launch(const char* jwt,const char* device,std::uint64_t now,const StreamSettings& settings={},unsigned audioChannels=2) noexcept;
     void launchEntry(CatalogSource source,unsigned index,const char* jwt,const char* device,std::uint64_t now,const StreamSettings& settings,unsigned audioChannels=2) noexcept;
     void dismissLaunchError() noexcept;
+    RecoveryResult recover(const char* jwt,const char* device,std::uint64_t now,const StreamSettings& settings,unsigned audioChannels=2,const Session* retained=nullptr,bool allowRetainedResume=true) noexcept;
     void tick(const char* jwt,const char* device,std::uint64_t now) noexcept;
     bool stop(const char* jwt,const char* device) noexcept;
     void reset() noexcept;
     const CloudView& view() const {return view_;}
     const CloudView& library() const {return library_;}
     const Session& session() const {return session_;}
+    bool recoveryRequired() const {return recoveryBlocked_;}
 private:
     void fail(const char*) noexcept;
     void failLaunch(const char*) noexcept;
@@ -54,9 +61,22 @@ private:
     bool fetchPage(CatalogSource source,unsigned page,const char* jwt,const char* device) noexcept;
     void start(const Game& game,const char* jwt,const char* device,std::uint64_t now,const StreamSettings& settings,unsigned audioChannels) noexcept;
     bool parseSession(const Response&) noexcept;
+    struct RemoteSeat {char id[128]{},appId[96]{},base[512]{},control[512]{};};
+    void remoteSeat(const cJSON*,const char*) noexcept;
+    void clearSession() noexcept;
+    bool controlEndpoint(const cJSON*,char*,std::size_t) noexcept;
     Request request_;void* context_;
+    TrustEndpoint trust_;
     CloudView view_{},library_{};Session session_{};
+    StreamSettings allocationSettings_{};
     char base_[512]{},vpc_[128]{},search_[128]{};
+    char controlBase_[512]{};
+    RemoteSeat remote_{};
+    char remoteIds_[32][128]{};
+    unsigned remoteCount_=0,pollFailures_=0,resumePolls_=0;
+    unsigned audioCapacity_=2;
+    bool recoveryBlocked_=false,resumePending_=false;
+    std::uint64_t conflictUntil_=0,resumeDeadline_=0,currentNow_=0;
     char browseCursors_[catalogMaxPages][128]{},libraryCursors_[catalogMaxPages][128]{};
     std::uint64_t nextPoll_=0;
 };

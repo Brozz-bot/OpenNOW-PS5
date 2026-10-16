@@ -7,5 +7,5 @@ std::string AdaptAnswerSdpToOffer(const std::string&,const std::string&,const St
 std::string RewriteGfnMediaCandidate(std::string,const std::string&,int,const std::string& signaling_url = {});
 std::string BuildManualMediaCandidate(const std::string&,const std::string&,int,int);
 std::string ExtractSdpValue(const std::string&,const std::string&);
-webrtc::RiInputCapabilities ParseRiInputCapabilities(const std::string&);
+bool ParseRiInputCapabilities(const std::string&,webrtc::RiInputCapabilities&);
 }

@@ -5,6 +5,7 @@ extern "C" {
 int sceUserServiceGetInitialUser(int*) {return -1;}
 int scePadOpen(int,int,int,void*) {return -1;}
 int scePadReadState(int,PS5_PadData*) {return -1;}
+int scePadSetVibration(int,const PS5_PadVibration*) {return 0;}
 unsigned long long sceKernelGetProcessTime() {return 1000000;}
 }
 namespace opennow::gpu {

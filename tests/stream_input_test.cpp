@@ -27,6 +27,172 @@ void wireFixtures() {
     assert((mouseWheel(120,-120,3,stamp)==Bytes{0x23,T8,0x22,0x0a,0,0,0,0,0x78,0xff,0x88,0,0,0,0,0,0,T8}));
 }
 
+void gamepadFixtures() {
+    using namespace opennow;
+    const GamepadState state{0x1234,0xabcd,-32767,32767,-1,1,true};
+    const Bytes event{12,0,0,0,26,0,0,0,1,1,20,0,0x34,0x12,0xcd,0xab,
+                      1,0x80,0xff,0x7f,0xff,0xff,1,0,0,0,85,0,0,0,
+                      8,7,6,5,4,3,2,1};
+    assert(wire::gamepad(state,2,stamp)==event);
+    Bytes framed{0x23,T8,0x21,0,38};
+    framed.insert(framed.end(),event.begin(),event.end());
+    assert(wire::gamepad(state,3,stamp)==framed);
+    assert(wire::gamepad(state,4,stamp)==framed);
+    assert(state.neutral()==0);
+    GamepadState neutral;
+    assert(neutral.neutral()==3);
+    const auto disconnected=wire::gamepad(neutral,2,stamp);
+    assert(disconnected.size()==38&&disconnected[6]==0&&disconnected[7]==0);
+    assert(disconnected[8]==0&&disconnected[9]==0);
+    for(unsigned i=12;i<24;++i)assert(disconnected[i]==0);
+    neutral.connected=true;
+    auto connected=disconnected;connected[8]=connected[9]=1;
+    assert(wire::gamepad(neutral,2,stamp)==connected);
+    neutral.lx=1;assert(neutral.neutral()==2);
+    neutral.rx=1;assert(neutral.neutral()==0);
+    neutral.lx=0;assert(neutral.neutral()==1);
+}
+
+void gamepadMapping() {
+    using opennow::gamepadState;
+    PS5_PadData pad{};
+    pad.buttons=0xffffffff;pad.analogButtons={255,255};
+    auto state=gamepadState(pad,5,5);
+    assert(!state.connected&&!state.buttons&&!state.triggers&&state.neutral()==3);
+    pad.connected=true;pad.leftStick={128,128};pad.rightStick={128,128};
+    const unsigned ps[]={PS5_PAD_BUTTON_UP,PS5_PAD_BUTTON_DOWN,PS5_PAD_BUTTON_LEFT,PS5_PAD_BUTTON_RIGHT,
+                         PS5_PAD_BUTTON_OPTIONS,PS5_PAD_BUTTON_TOUCH_PAD,PS5_PAD_BUTTON_L3,PS5_PAD_BUTTON_R3,
+                         PS5_PAD_BUTTON_L1,PS5_PAD_BUTTON_R1,PS5_PAD_BUTTON_CROSS,PS5_PAD_BUTTON_CIRCLE,
+                         PS5_PAD_BUTTON_SQUARE,PS5_PAD_BUTTON_TRIANGLE};
+    const unsigned xb[]={1,2,4,8,16,32,64,128,256,512,4096,8192,16384,32768};
+    for(unsigned i=0;i<14;++i) {
+        pad.buttons=ps[i];state=gamepadState(pad,5,5);
+        assert(state.connected&&state.buttons==xb[i]&&state.triggers==65535&&state.neutral()==3);
+    }
+    pad.buttons=PS5_PAD_BUTTON_L2|PS5_PAD_BUTTON_R2;pad.analogButtons={0x12,0x34};
+    state=gamepadState(pad,5,5);
+    assert(!state.buttons&&state.triggers==0x3412);
+    pad.buttons=0;
+    pad.leftStick={0,128};pad.rightStick={128,0};
+    state=gamepadState(pad,0,0);
+    assert(state.lx==-32767&&state.ly==0&&state.rx==0&&state.ry==32767);
+    pad.leftStick={255,128};pad.rightStick={128,255};
+    state=gamepadState(pad,50,50);
+    assert(state.lx==32767&&state.ly==0&&state.rx==0&&state.ry==-32767);
+    pad.leftStick={134,122};pad.rightStick={128,128};
+    state=gamepadState(pad,5,5);
+    assert(state.lx==405&&state.ly==402&&state.neutral()==2);
+    pad.leftStick={134,128};pad.rightStick={134,128};
+    state=gamepadState(pad,5,0);
+    assert(!state.lx&&state.rx==1548&&state.neutral()==1);
+    pad.leftStick={135,128};pad.rightStick={135,128};
+    state=gamepadState(pad,5,50);
+    assert(state.lx==177&&state.rx==0&&state.neutral()==2);
+    pad.leftStick={192,192};pad.rightStick={0,0};
+    state=gamepadState(pad,50,5);
+    assert(state.lx==9855&&state.ly==-9855&&state.rx==-32767&&state.ry==32767);
+}
+
+void mouseSensitivity() {
+    using namespace opennow::wire;
+    assert((mouseMove(5,-5,2,stamp,50)==Bytes{7,0,0,0,0,3,0xff,0xfd,0,0,0,0,0,0,T8}));
+    assert((mouseMove(1,-1,3,stamp,150)==Bytes{0x23,T8,0x21,0,22,7,0,0,0,0,2,0xff,0xfe,0,0,0,0,0,0,T8}));
+    assert((mouseMove(32767,-32768,2,stamp,300)==Bytes{7,0,0,0,0x7f,0xff,0x80,0,0,0,0,0,0,0,T8}));
+    assert((mouseMove(4,-4,2,stamp,10)==Bytes{7,0,0,0,0,0,0,0,0,0,0,0,0,0,T8}));
+    assert(mouseMove(32767,-32768,3,stamp,100)==mouseMove(32767,-32768,3,stamp));
+}
+
+Bytes rumbleCommand(unsigned kind,unsigned blobLength,const Bytes& records) {
+    Bytes command{0x0b,1,static_cast<std::uint8_t>(records.size()+4),0,
+                  static_cast<std::uint8_t>(kind),0,static_cast<std::uint8_t>(blobLength),0};
+    command.insert(command.end(),records.begin(),records.end());
+    return command;
+}
+
+void rumbleFixtures() {
+    using opennow::wire::decodeRumble;
+    auto packet=rumbleCommand(1,12,{0,0,0x34,0x12,0xcd,0xab,3,0,0xff,0xff,0,0});
+    auto commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&commands[0]->controllerId==0&&commands[0]->lowFrequency==0x1234);
+    assert(commands[0]->highFrequency==0xabcd&&commands[0]->durationMs==1000);
+    assert(!commands[1]&&!commands[2]);
+    assert(commands[3]&&commands[3]->controllerId==3&&commands[3]->lowFrequency==65535);
+    assert(commands[3]->highFrequency==0&&commands[3]->durationMs==1000);
+    packet=rumbleCommand(2,16,{1,0,1,0,2,0,0x34,0x12,2,0,3,0,4,0,0,0});
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[1]&&commands[1]->lowFrequency==1&&commands[1]->highFrequency==2&&commands[1]->durationMs==0x1234);
+    assert(commands[2]&&commands[2]->durationMs==1000);
+    auto stop=rumbleCommand(2,8,{1,0,0,0,0,0,0xff,0xff});
+    packet.insert(packet.end(),stop.begin(),stop.end());
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[1]&&!commands[1]->lowFrequency&&!commands[1]->highFrequency&&commands[1]->durationMs==65535);
+    assert(commands[2]&&commands[2]->lowFrequency==3);
+    packet=rumbleCommand(1,12,{0,0,1,0,2,0,0,0,3,0,4,0});
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&commands[0]->lowFrequency==3&&commands[0]->highFrequency==4);
+}
+
+bool noRumble(const opennow::RumbleBatch& commands) {
+    for(const auto& command:commands)if(command)return false;
+    return true;
+}
+
+void malformedRumble() {
+    using opennow::wire::decodeRumble;
+    assert(noRumble(decodeRumble(nullptr,0)));
+    const auto full=rumbleCommand(2,8,{0,0,0xff,0xff,0,0,1,0});
+    assert(noRumble(decodeRumble(nullptr,full.size())));
+    for(unsigned n=0;n<full.size();++n)assert(noRumble(decodeRumble(full.data(),n)));
+    auto packet=full;packet[2]=0xff;packet[3]=0xff;
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=full;packet[0]=0xff;
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet={0x0b,1,0,0};
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet={0x0b,1,2,0,1,0};
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(3,8,{0,0,0,0,1,0,2,0});
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(1,6,{4,0,1,0,2,0});
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(1,6,{0,1,1,0,2,0});
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(1,5,{0,0,1,0,2,0});
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(2,8,{0,0,1,0,2,0,1});
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet=rumbleCommand(1,255,{0,0,1,0,2,0,0xff});
+    auto commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&commands[0]->lowFrequency==1&&commands[0]->highFrequency==2);
+    packet=rumbleCommand(1,6,{0,0,1,0,2,0,1,0,3,0,4,0});
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&!commands[1]);
+    packet={0x20,3,3,0,1,2,3};packet.insert(packet.end(),full.begin(),full.end());
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&commands[0]->lowFrequency==65535);
+    packet=full;packet.insert(packet.end(),{0x0b,1,0xff,0xff,1,2});
+    commands=decodeRumble(packet.data(),packet.size());
+    assert(commands[0]&&commands[0]->lowFrequency==65535);
+    packet={0x20,3,0xff,0xff};packet.insert(packet.end(),full.begin(),full.end());
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+    packet={0x20,3,static_cast<std::uint8_t>(full.size()),0};packet.insert(packet.end(),full.begin(),full.end());
+    assert(noRumble(decodeRumble(packet.data(),packet.size())));
+}
+
+void rumbleScaling() {
+    const opennow::Rumble command{0,65535,32768,1234};
+    auto motors=opennow::rumbleMotors(command,100);
+    assert(motors.large_motor==255&&motors.small_motor==128);
+    motors=opennow::rumbleMotors(command,50);
+    assert(motors.large_motor==127&&motors.small_motor==64);
+    motors=opennow::rumbleMotors(command,0);
+    assert(!motors.large_motor&&!motors.small_motor);
+    motors=opennow::rumbleMotors({0,256,255,1000},100);
+    assert(motors.large_motor==1&&!motors.small_motor);
+    motors=opennow::rumbleMotors({0,0,0,1000},100);
+    assert(!motors.large_motor&&!motors.small_motor);
+}
+
 void wheelQueueScenarios() {
     opennow::InputQueue queue;
     opennow::InputEvent event;
@@ -264,6 +430,12 @@ void launcherScenarios() {
 }
 
 int main() {
+    gamepadFixtures();
+    gamepadMapping();
+    mouseSensitivity();
+    rumbleFixtures();
+    malformedRumble();
+    rumbleScaling();
     launcherScenarios();
     wireFixtures();
     wheelQueueScenarios();

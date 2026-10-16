@@ -9,11 +9,13 @@
 #include <vector>
 
 namespace { unsigned testButtons=0; bool testConnected=true; PS5_PadTouchData testTouch{};
+PS5_PadVibration testMotors{};
 decltype(PS5_PadData::rightStick) testRightStick{128,128}; decltype(PS5_PadData::analogButtons) testTriggers{}; }
 extern "C" {
 int sceUserServiceGetInitialUser(int* user) {*user=0;return 0;}
 int scePadOpen(int,int,int,void*) {return 1;}
 int scePadReadState(int,PS5_PadData* data) {data->connected=testConnected;data->buttons=testButtons;data->touch=testTouch;data->leftStick={128,128};data->rightStick=testRightStick;data->analogButtons=testTriggers;return 0;}
+int scePadSetVibration(int,const PS5_PadVibration* value) {testMotors=*value;return 0;}
 unsigned long long testNow=1000000;
 unsigned long long sceKernelGetProcessTime() {testNow+=16000;return testNow;}
 }
@@ -71,6 +73,14 @@ void writeV1(const char* path,StreamProfile profile) {
 }
 void storeChecks() {
     using opennow::StreamSettings;
+    auto tuned=StreamSettings{};
+    tuned.controller_left_deadzone=12;tuned.controller_right_deadzone=17;
+    tuned.vibration_intensity=35;tuned.mouse_sensitivity=180;tuned.persist_game_settings=false;
+    assert(opennow::ui::changedRows(tuned,StreamSettings{})==
+        (opennow::ui::controllerBit|opennow::ui::mouseBit|opennow::ui::persistenceBit));
+    const auto tunedPreset=opennow::ui::presetFor(StreamProfile::smooth,tuned);
+    assert(tunedPreset.controller_left_deadzone==12&&tunedPreset.controller_right_deadzone==17&&
+        tunedPreset.vibration_intensity==35&&tunedPreset.mouse_sensitivity==180&&!tunedPreset.persist_game_settings);
     const char* path="build/host-tests/ui-store-settings.bin";
     std::remove(path);
     const auto available=opennow::gpu::settingsAvailable;
@@ -564,6 +574,19 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
 
     publishedStream=true;publishedSession=true;
     assert(current()==Screen::connecting);
+    publishedInputReady=true;++publishedStreamGeneration;
+    publishedRumble={{0,65535,32768,1000},testNow,1,publishedStreamGeneration};draw(canvas);
+    assert(testMotors.large_motor==255&&testMotors.small_motor==128);
+    testNow+=1000001;draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor);
+    publishedRumble.receivedAt=testNow;++publishedRumble.revision;draw(canvas);assert(testMotors.large_motor);
+    testConnected=false;draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor);
+    testConnected=true;draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor);
+    publishedRumble.receivedAt=testNow;++publishedRumble.revision;draw(canvas);assert(testMotors.large_motor);
+    keyboard.show();draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor&&publishedPad.connected);
+    keyboard.hide();draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor);
+    publishedRumble.receivedAt=testNow;++publishedRumble.revision;draw(canvas);assert(testMotors.large_motor);
+    ++publishedStreamGeneration;draw(canvas);assert(!testMotors.large_motor&&!testMotors.small_motor);
+    publishedInputReady=false;
     for(unsigned button:{PS5_PAD_BUTTON_CROSS,PS5_PAD_BUTTON_CIRCLE,PS5_PAD_BUTTON_TRIANGLE,PS5_PAD_BUTTON_SQUARE,PS5_PAD_BUTTON_L1,PS5_PAD_BUTTON_R1,PS5_PAD_BUTTON_OPTIONS,PS5_PAD_BUTTON_UP}) {
         press(button);
         assert(command.load()==0&&!http.cancelled&&!searchInput.open&&!detailOpen&&section==Section::library);
@@ -614,7 +637,8 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         press(PS5_PAD_BUTTON_OPTIONS);assert(publishedPad.buttons==PS5_PAD_BUTTON_OPTIONS);
 
         testButtons=PS5_PAD_BUTTON_OPTIONS|PS5_PAD_BUTTON_TRIANGLE;draw(canvas);
-        assert(keyboard.open&&!publishedPad.connected&&publishedPad.buttons==0&&cancelled()&&!inputQueue.size());
+        assert(keyboard.open&&publishedPad.connected&&publishedPad.buttons==0&&cancelled()&&!inputQueue.size());
+        assert(publishedPad.leftStick.x==128&&publishedPad.leftStick.y==128&&publishedPad.rightStick.x==128&&publishedPad.rightStick.y==128);
         press(PS5_PAD_BUTTON_CROSS);
         assert(inputQueue.take(e,true)&&e.kind==InputEvent::Kind::key&&e.key.vk==0x51&&!e.key.modifiers);
         press(PS5_PAD_BUTTON_SQUARE);
@@ -623,11 +647,11 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         assert(inputQueue.take(e,true)&&e.key.vk==0x20);
         press(PS5_PAD_BUTTON_L1);press(PS5_PAD_BUTTON_RIGHT);press(PS5_PAD_BUTTON_CROSS);
         assert(inputQueue.take(e,true)&&e.key.vk==0x57&&e.key.modifiers==opennow::modifierShift);
-        assert(command.load()==0&&!publishedPad.connected);
+        assert(command.load()==0&&publishedPad.connected);
         testTouch.fingers=1;testTouch.touch[0]={300,300,4,{}};
         press(PS5_PAD_BUTTON_TOUCH_PAD);
         testTouch.touch[0]={500,300,4,{}};testButtons=0;draw(canvas);
-        assert(!inputQueue.size()&&!publishedPad.connected&&keyboard.open);
+        assert(!inputQueue.size()&&publishedPad.connected&&keyboard.open);
         testTouch={};
         publishedInputReady=false;
         assert(draw(canvas)&&!draw(canvas));
@@ -719,7 +743,7 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         assert(publishedPad.buttons==PS5_PAD_BUTTON_TOUCH_PAD&&launcher.active&&launcher.speed==2);
         testButtons=0;draw(canvas);assert(publishedPad.buttons==0);
         press(PS5_PAD_BUTTON_TRIANGLE);
-        assert(keyboard.open&&launcher.active&&cancelled()&&!publishedPad.connected);
+        assert(keyboard.open&&launcher.active&&cancelled()&&publishedPad.connected);
         testRightStick={255,128};testButtons=PS5_PAD_BUTTON_R2;draw(canvas);
         assert(!inputQueue.size());
         testRightStick={128,128};testButtons=0;draw(canvas);

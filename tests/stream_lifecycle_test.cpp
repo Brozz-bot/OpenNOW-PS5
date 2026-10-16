@@ -31,6 +31,16 @@ std::vector<opennow::wire::Bytes> controlSent;
 int inputSendBudget=-1;
 bool controlSendFails=false;
 bool controlOpen=false;
+bool inputOpen=true,partialInputOpen=true,channelCreateFails=false,candidateFails=false;
+bool mediaVideoAccepts=true,secureAnswer=true;
+unsigned keyframeRequests=0,referenceResets=0,mediaVideoCalls=0;
+std::uint64_t processTime=0;
+PeerVideoRtpStats rtpStats{};
+void (*videoCallback)(const PeerVideoPacket*,void*)=nullptr;
+void* videoContext=nullptr;
+struct ChannelRequest {std::uint16_t sid;DecpChannelType type;std::uint32_t reliability;std::string label;};
+std::vector<ChannelRequest> channelRequests;
+std::vector<std::uint16_t> sentSids;
 void (*dataCallback)(char*, size_t, void*, uint16_t) = nullptr;
 void (*dataOpened)(void*) = nullptr;
 void (*dataClosed)(void*) = nullptr;
@@ -41,6 +51,7 @@ WebSocketClient* websocket = nullptr;
 constexpr const char* answer =
     "v=0\r\na=group:BUNDLE video audio datachannel\r\n"
     "a=ice-ufrag:test\r\na=ice-pwd:test-password\r\n"
+    "a=fingerprint:sha-256 AA:BB:CC\r\n"
     "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:video\r\na=rtpmap:96 H264/90000\r\n"
     "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio\r\na=rtpmap:111 opus/48000/2\r\n"
     "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:datachannel\r\n";
@@ -76,6 +87,14 @@ void clean() {
     assert(!mediaRunning);
     assert(audioHandles==0);
 }
+opennow::wire::Bytes command(std::uint16_t code,const opennow::wire::Bytes& payload){
+    opennow::wire::Bytes bytes;
+    opennow::wire::le(bytes,code,2);opennow::wire::le(bytes,payload.size(),2);
+    bytes.insert(bytes.end(),payload.begin(),payload.end());return bytes;
+}
+void receive(const opennow::wire::Bytes& bytes,std::uint16_t sid=6){
+    dataCallback(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),bytes.size(),dataContext,sid);
+}
 }
 
 struct PeerConnection {
@@ -102,18 +121,18 @@ void WebSocketClient::poll() {
 }
 
 namespace opennow {
-bool Media::start(const StreamSettings& settings,unsigned channels) noexcept { mediaSettings=settings;frames = 0; mediaRunning = mediaStarts&&audioOutput_.open(channels); return mediaRunning; }
+bool Media::start(const StreamSettings& settings,unsigned channels) noexcept { mediaSettings=settings;frames = 0;presented=0; mediaRunning = mediaStarts&&audioOutput_.open(channels); return mediaRunning; }
 bool Media::configureAudio(const audio::Format& format) noexcept {configuredAudio=format;return audioConfigureSucceeds&&audio::validFormat(format);}
 void Media::stop() noexcept { audioOutput_.close();mediaRunning = false; }
-void Media::requireKeyframe() noexcept {}
-bool Media::video(const std::uint8_t*, std::size_t) noexcept { return true; }
+void Media::requireKeyframe() noexcept {++referenceResets;}
+bool Media::video(const std::uint8_t*, std::size_t) noexcept {++mediaVideoCalls;return mediaVideoAccepts;}
 void Media::audio(const std::uint8_t*, std::size_t, std::uint16_t, std::uint8_t, std::uint32_t) noexcept {}
 bool randomBytes(void* output, std::size_t size) noexcept { std::memset(output, 0, size); return entropyWorks; }
 void secureErase(void* data, std::size_t size) noexcept { std::memset(data, 0, size); }
 }
 
 extern "C" {
-unsigned long long sceKernelGetProcessTime() { return 1000000; }
+unsigned long long sceKernelGetProcessTime() { return processTime; }
 int sceAudioOutInit(){return 0;}
 int sceAudioOutOpen(int,int,int,unsigned,unsigned,unsigned format){if(format==2&&!allowEightChannelOutput)return -1;++audioHandles;return 10;}
 int sceAudioOutClose(int){--audioHandles;return 0;}
@@ -128,6 +147,7 @@ PeerConnection* peer_connection_create(PeerConfiguration* config) {
     if (!peerStarts) return nullptr;
     candidates.clear();
     remoteSdp.clear();
+    channelRequests.clear();videoCallback=config->onvideopacket;videoContext=config->user_data;
     unsigned char byte;
     opennow_peer_random(&byte, 1);
     ++peers;
@@ -135,7 +155,7 @@ PeerConnection* peer_connection_create(PeerConfiguration* config) {
 }
 void peer_connection_close(PeerConnection*) {}
 void peer_connection_destroy(PeerConnection* pc) { assert(!inPoll && !inLoop); --peers; delete pc; }
-int peer_connection_get_video_rtp_stats(PeerConnection*, PeerVideoRtpStats* stats) { *stats = {}; stats->assembler_ready = assemblerReady; return 0; }
+int peer_connection_get_video_rtp_stats(PeerConnection*, PeerVideoRtpStats* stats) { *stats = rtpStats; stats->assembler_ready = assemblerReady; return 0; }
 void peer_connection_onicecandidate(PeerConnection* pc, void (*callback)(char*, void*)) { localIce = callback; localIceContext = pc->config.user_data; }
 void peer_connection_oniceconnectionstatechange(PeerConnection* pc, void (*fn)(PeerConnectionState, void*)) { pc->onState = fn; }
 void peer_connection_ondatachannel(PeerConnection* pc, void (*message)(char*, size_t, void*, uint16_t), void (*open)(void*), void (*close)(void*)) { dataCallback = message; dataOpened = open; dataClosed = close; dataContext = pc->config.user_data; }
@@ -144,9 +164,10 @@ const char* peer_connection_create_answer(PeerConnection*) {
     if (nullAnswer) return nullptr;
     char candidate[] = "a=candidate:local 1 udp 1234 192.168.1.2 50000 typ host\r\n";
     localIce(candidate, localIceContext);
+    if(!secureAnswer)return "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:video\r\na=rtpmap:96 H264/90000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio\r\na=rtpmap:111 opus/48000/2\r\n";
     return answer;
 }
-int peer_connection_add_ice_candidate(PeerConnection*, char* candidate) { candidates.emplace_back(candidate); return 0; }
+int peer_connection_add_ice_candidate(PeerConnection*, char* candidate) {assert(!remoteSdp.empty());if(candidateFails)return -1;candidates.emplace_back(candidate); return 0; }
 int peer_connection_get_ice_candidate_pair_stats(PeerConnection*, int* total, int*, int*, int*, int*) {
     *total = static_cast<int>(candidates.size()) + (remoteSdp.find("a=candidate:") != std::string::npos);
     return 0;
@@ -163,14 +184,16 @@ int peer_connection_loop(PeerConnection* pc) {
     inLoop = false;
     return 0;
 }
-int peer_connection_request_video_keyframe(PeerConnection*) { return 0; }
-int peer_connection_create_datachannel_sid(PeerConnection*, DecpChannelType, uint16_t, uint32_t, char*, char*, uint16_t) { return 0; }
-int peer_connection_datachannel_is_open(PeerConnection*, uint16_t sid) { return sid==6&&controlOpen; }
+int peer_connection_request_video_keyframe(PeerConnection*) { ++keyframeRequests;return 0; }
+int peer_connection_create_datachannel_sid(PeerConnection*, DecpChannelType type, uint16_t, uint32_t reliability, char* label, char*, uint16_t sid) {if(channelCreateFails)return -1;channelRequests.push_back({sid,type,reliability,label});return 0; }
+int peer_connection_datachannel_is_open(PeerConnection*, uint16_t sid) { return (sid==6&&controlOpen)||(sid==0&&inputOpen)||(sid==4&&partialInputOpen); }
 int peer_connection_datachannel_send_binary_sid(PeerConnection*, char* data, size_t size, uint16_t sid) {
-    if(!sid){
+    if(sid==0||sid==4){
+        if((sid==0&&!inputOpen)||(sid==4&&!partialInputOpen))return -1;
         if(inputSendBudget==0)return -1;
         if(inputSendBudget>0)--inputSendBudget;
         sent.emplace_back(data,data+size);
+        sentSids.push_back(sid);
     }else if(sid==6){
         if(controlSendFails)return -1;
         controlSent.emplace_back(data,data+size);
@@ -269,7 +292,7 @@ int main() {
     assert(stream.start(launch,"test"));stream.tick(1000000);outbound.clear();
     incoming=R"({"hb":null,"ackid":3})";stream.tick(1000002);
     assert(std::find(outbound.begin(),outbound.end(),R"({"ack":3})")!=outbound.end());
-    assert(std::find(outbound.begin(),outbound.end(),R"({"hb":1})")!=outbound.end());
+    assert(std::find(outbound.begin(),outbound.end(),R"({"hb":1})")==outbound.end());
     stream.stop();clean();
     launch.settings={1440,1080,47,32000,opennow::VideoMode::h264Hardware,opennow::QualityMode::clarity,opennow::NetworkPolicy::fixed};
     const auto expectedSettings=launch.settings;
@@ -297,7 +320,7 @@ int main() {
     assert(stream.failed());
     clean();
 
-    for (auto state : {PEER_CONNECTION_FAILED, PEER_CONNECTION_CLOSED}) {
+    for (auto state : {PEER_CONNECTION_FAILED, PEER_CONNECTION_CLOSED,PEER_CONNECTION_DISCONNECTED}) {
         assert(stream.start(launch, "test"));
         media.frames = 1;
         nextState = state;
@@ -305,16 +328,6 @@ int main() {
         assert(stream.failed());
         clean();
     }
-
-    assert(stream.start(launch, "test"));
-    nextState = PEER_CONNECTION_DISCONNECTED;
-    stream.tick(1000000);
-    assert(!stream.failed() && stream.active());
-    media.frames = 1;
-    stream.tick(46000001);
-    assert(!stream.failed() && stream.active());
-    stream.stop();
-    clean();
 
     assert(stream.start(launch, "test"));
     stream.tick(1000000);
@@ -394,7 +407,7 @@ int main() {
     clean();
 
     for (bool audioBundle : {false, true}) {
-        std::strcpy(launch.signaling, "wss://signaling.example/nvst/sign_in?discard=1#fragment");
+        std::strcpy(launch.signaling, "wss://signaling.example/nvst/sign_in?discard=1");
         assert(stream.start(launch, "test"));
         assert(connectedUrl == "wss://signaling.example/nvst/sign_in?peer_id=opennow-test&version=2&peer_role=1&pairing_id=session-test");
         outbound.clear();
@@ -447,37 +460,37 @@ int main() {
         state.leftStick.x=200;
         stream.input(state,102000);assert(sent.size()==1);
         state.leftStick.x=128;
-        stream.input(state,104000);assert(sent.size()==2);
+        stream.input(state,104000);assert(sent.size()==1);
         assert(sent.back()[offset+16]==0&&sent.back()[offset+17]==0);
         state.leftStick.x=200;state.rightStick.x=200;
-        stream.input(state,120000);assert(sent.size()==3);
+        stream.input(state,120000);assert(sent.size()==2);
         state.leftStick.x=128;
-        stream.input(state,120002);assert(sent.size()==4);
+        stream.input(state,120002);assert(sent.size()==3);
         assert(sent.back()[offset+16]==0&&sent.back()[offset+17]==0&&sent.back()[offset+21]!=0);
         state.rightStick.x=201;
-        stream.input(state,120004);assert(sent.size()==4);
+        stream.input(state,120004);assert(sent.size()==3);
         state.rightStick.x=128;
-        stream.input(state,120006);assert(sent.size()==5);
+        stream.input(state,120006);assert(sent.size()==4);
         state.buttons=PS5_PAD_BUTTON_UP;
-        stream.input(state,120008);assert(sent.size()==6&&sent.back()[offset+12]==1);
+        stream.input(state,120008);assert(sent.size()==5&&sent.back()[offset+12]==1);
         state.buttons=0;
-        stream.input(state,120010);assert(sent.size()==7&&sent.back()[offset+12]==0);
+        stream.input(state,120010);assert(sent.size()==6&&sent.back()[offset+12]==0);
         state.analogButtons.l2=128;
-        stream.input(state,120012);assert(sent.size()==8&&sent.back()[offset+14]==128);
+        stream.input(state,120012);assert(sent.size()==7&&sent.back()[offset+14]==128);
         state.analogButtons.l2=0;
-        stream.input(state,120014);assert(sent.size()==9&&sent.back()[offset+14]==0);
+        stream.input(state,120014);assert(sent.size()==8&&sent.back()[offset+14]==0);
         state.connected=false;
-        stream.input(state,120016);assert(sent.size()==10);
+        stream.input(state,120016);assert(sent.size()==9);
         state.connected=true;
-        stream.input(state,120018);assert(sent.size()==11);
-        stream.input(state,120020);assert(sent.size()==11);
-        stream.input(state,136018);assert(sent.size()==12);
-        state.leftStick.x=140;
-        stream.input(state,152018);assert(sent.size()==13);
-        state.leftStick.x=139;
-        stream.input(state,152020);assert(sent.size()==14&&sent.back()[offset+16]==0&&sent.back()[offset+17]==0);
+        stream.input(state,120018);assert(sent.size()==10);
+        stream.input(state,120020);assert(sent.size()==10);
+        stream.input(state,136018);assert(sent.size()==11);
+        state.leftStick.x=135;
+        stream.input(state,152018);assert(sent.size()==12);
+        state.leftStick.x=134;
+        stream.input(state,152020);assert(sent.size()==13&&sent.back()[offset+16]==0&&sent.back()[offset+17]==0);
         state.leftStick.x=128;
-        stream.input(state,152022);assert(sent.size()==14);
+        stream.input(state,152022);assert(sent.size()==13);
         stream.stop();clean();sent.clear();
     }
     opennow::InputQueue queue;
@@ -497,7 +510,7 @@ int main() {
     stream.input(pad, 5000000);
     assert(sent.size() == 1);
     assert((sent[0] == Bytes{0x23, 0, 0, 0, 0, 0, 0x4c, 0x4b, 0x40, 0x21, 0x00, 0x26,
-        0x0c, 0, 0, 0, 0x1a, 0, 0, 0, 0x01, 0, 0x14, 0, 0x20, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 0,
+        0x0c, 0, 0, 0, 0x1a, 0, 0, 0, 0x01, 1, 0x14, 0, 0x20, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 0,
         0x40, 0x4b, 0x4c, 0, 0, 0, 0, 0}));
     sent.clear();
     pad.buttons = PS5_PAD_BUTTON_TOUCH_PAD;
@@ -633,23 +646,24 @@ int main() {
     stream.events(queue, 2020000);
     assert(sent.empty() && queue.size() == 0);
     stream.tick(3000000);
-    assert(!stream.inputReady());
+    assert(!stream.inputReady()&&stream.failed()&&!stream.active());
     stream.events(queue, 3000001);
     assert(sent.empty());
     dataOpened(dataContext);
     stream.tick(4000000);
+    assert(!stream.inputReady());
+    clean();
+    assert(stream.start(launch,"test"));
+    dataCallback(v3,sizeof(v3),dataContext,0);
     assert(stream.inputReady());
     sent.clear();
     queue.move(5, 0);
     stream.events(queue, 4000001);
-    assert(sent.size() == 4);
-    assert(sent[0] == wire::key(false, 0x41, 0x1e, 1, 2, 4000001));
-    assert(sent[1] == wire::key(false, 0xa0, 0x2a, 0, 2, 4000001));
-    assert(sent[2] == wire::mouseButton(false, 1, 2, 4000001));
-    assert(sent[3] == wire::mouseMove(5, 0, 2, 4000001));
+    assert(sent.size() == 1);
+    assert(sent[0] == wire::mouseMove(5, 0, 3, 4000001));
     sent.clear();
     stream.stop();
-    assert(sent.size() == 1 && sent[0].size() == 38);
+    assert(sent.size() == 1 && sent[0].size() == 50);
     clean();
     media.frames = 0;
     for(int protocol:{2,3}){
@@ -723,5 +737,189 @@ int main() {
         stream.tick(7000001);
         assert(std::count(controlSent.begin(),controlSent.end(),cursor)==2);
         stream.stop();clean();controlOpen=false;
+    }
+
+    for(const auto& invalid:std::vector<std::string>{"{","null","{} trailing",std::string("{}\0{}",5),R"({"error":"rejected secret server text"})",R"({"peer_msg":{"msg":"{"}})",std::string(65537,'x')}){
+        assert(stream.start(session(),"test"));incoming=invalid;stream.tick(1000000);
+        assert(stream.failed()&&!stream.active());
+        assert(!std::strstr(stream.status(),"secret server text"));clean();
+    }
+    for(const char* bad:{"wss://","https://signaling.example/nvst/","wss://user:password@signaling.example/nvst/","wss://signaling.example/nvst/#fragment","wss://signaling.example/\r\n"}){
+        auto invalid=session();std::strcpy(invalid.signaling,bad);
+        assert(!stream.start(invalid,"test")&&stream.failed());clean();
+    }
+    {
+        auto encoded=session();std::strcpy(encoded.id,"seat&other=1 /%");
+        assert(stream.start(encoded,"device&name=1"));
+        assert(connectedUrl=="wss://signaling.example/nvst/sign_in?peer_id=opennow-device%26name%3D1&version=2&peer_role=1&pairing_id=seat%26other%3D1%20%2F%25");
+        stream.stop();clean();
+    }
+    {
+        outbound.clear();assert(stream.start(session(),"test"));
+        auto* root=cJSON_Parse(outbound.front().c_str());auto* info=cJSON_GetObjectItemCaseSensitive(root,"peer_info");
+        assert(cJSON_GetArraySize(info)==8);
+        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(info,"browser")->valuestring,"Chrome"));
+        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(info,"browserVersion")->valuestring,"131"));
+        assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(info,"connected")));
+        assert(cJSON_GetObjectItemCaseSensitive(info,"peerRole")->valueint==0);
+        assert(cJSON_GetObjectItemCaseSensitive(info,"version")->valueint==2);
+        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(info,"resolution")->valuestring,"1920x1080"));
+        cJSON_Delete(root);
+        stream.tick(1000000);outbound.clear();incoming=R"({"hb":0})";stream.tick(1000001);
+        assert(outbound.empty());incoming=R"({"hb":1})";stream.tick(1000002);
+        assert(outbound==std::vector<std::string>{R"({"hb":1})"});
+        stream.stop();clean();
+    }
+    {
+        assert(stream.start(session(),"test"));secureAnswer=false;
+        queuePayload("sdp",answer);stream.tick(1000000);
+        assert(stream.failed()&&std::strstr(stream.status(),"credentials"));clean();secureAnswer=true;
+        assert(stream.start(session(),"test"));queuePayload("sdp",(std::string(answer)+"a=ri.partialReliableThresholdMs:0\r\n").c_str());stream.tick(1000000);
+        assert(stream.failed()&&std::strstr(stream.status(),"capabilities"));clean();
+        assert(stream.start(session(),"test"));queuePayload("sdp",answer);stream.tick(1000000);
+        assert(!stream.failed());queuePayload("sdp",answer);stream.tick(1000001);
+        assert(stream.failed()&&std::strstr(stream.status(),"renegotiation"));clean();
+    }
+    {
+        constexpr const char* candidate="candidate:early 1 udp 1234 198.51.100.44 50000 typ host";
+        assert(stream.start(session(),"test"));queuePayload("candidate",candidate);stream.tick(1000000);
+        assert(candidates.empty()&&!stream.failed());queuePayload("sdp",answer);stream.tick(1000001);
+        assert(candidates==std::vector<std::string>{std::string("a=")+candidate});stream.stop();clean();
+        assert(stream.start(session(),"test"));
+        for(unsigned i=0;i<65;++i){queuePayload("candidate",candidate);stream.tick(1000000+i);assert(stream.failed()==(i==64));}
+        assert(std::strstr(stream.status(),"Too many queued"));clean();
+        assert(stream.start(session(),"test"));queuePayload("candidate",std::string(4097,'x').c_str());stream.tick(1000000);
+        assert(stream.failed()&&std::strstr(stream.status(),"ICE candidate"));clean();
+        assert(stream.start(session(),"test"));queuePayload("candidate",candidate);stream.tick(1000000);
+        candidateFails=true;queuePayload("sdp",answer);stream.tick(1000001);
+        assert(stream.failed()&&std::strstr(stream.status(),"Could not add remote"));clean();candidateFails=false;
+    }
+    {
+        assert(stream.start(session(),"test"));inputOpen=partialInputOpen=false;dataOpened(dataContext);
+        assert(channelRequests.size()==4);
+        assert(channelRequests[0].sid==0&&channelRequests[0].type==DATA_CHANNEL_RELIABLE&&channelRequests[0].label=="input_channel_v1");
+        assert(channelRequests[1].sid==2&&channelRequests[1].type==DATA_CHANNEL_PARTIAL_RELIABLE_REXMIT_UNORDERED&&channelRequests[1].reliability==0&&channelRequests[1].label=="stats_channel");
+        assert(channelRequests[2].sid==4&&channelRequests[2].type==DATA_CHANNEL_PARTIAL_RELIABLE_TIMED_UNORDERED&&channelRequests[2].reliability==300&&channelRequests[2].label=="input_channel_partially_reliable");
+        assert(channelRequests[3].sid==6&&channelRequests[3].label=="control_channel_partially_reliable"&&channelRequests[3].reliability==300);
+        dataOpened(dataContext);assert(channelRequests.size()==4);
+        char zeroVersion[]={14,2,0,0};dataCallback(zeroVersion,sizeof(zeroVersion),dataContext,0);
+        inputOpen=partialInputOpen=true;stream.tick(3000000);assert(!stream.inputReady());
+        partialInputOpen=false;processTime=4000000;
+        dataCallback(v3,sizeof(v3),dataContext,0);assert(!stream.inputReady());
+        partialInputOpen=true;stream.tick(4000000);assert(stream.inputReady());
+        dataCallback(v2,sizeof(v2),dataContext,0);
+        sent.clear();sentSids.clear();PS5_PadData state{};state.connected=true;state.leftStick={128,128};state.rightStick={128,128};
+        stream.input(state,4001234);
+        assert(sent==std::vector<Bytes>{wire::gamepad(opennow::gamepadState(state,5,5),3,1234)});
+        assert(sentSids==std::vector<std::uint16_t>{4});
+        stream.stop();clean();processTime=0;
+        assert(stream.start(session(),"test"));channelCreateFails=true;dataOpened(dataContext);assert(channelRequests.empty());
+        channelCreateFails=false;dataOpened(dataContext);assert(channelRequests.size()==4);
+        dataCallback(v2,sizeof(v2),dataContext,0);assert(stream.inputReady());
+        partialInputOpen=false;stream.tick(1000000);assert(stream.failed());clean();partialInputOpen=true;
+    }
+    {
+        auto tuned=session();tuned.settings.controller_left_deadzone=50;tuned.settings.controller_right_deadzone=0;tuned.settings.mouse_sensitivity=200;
+        assert(stream.start(tuned,"test"));dataCallback(v3,sizeof(v3),dataContext,0);
+        PS5_PadData state{};state.connected=true;state.leftStick={150,128};state.rightStick={150,128};
+        sent.clear();inputSendBudget=0;stream.input(state,100000);assert(sent.empty());
+        inputSendBudget=1;stream.input(state,100001);assert(sent.size()==1);
+        assert(sent.back()==wire::gamepad(opennow::gamepadState(state,50,0),3,100001));
+        assert(sent.back()[28]==0&&sent.back()[29]==0&&sent.back()[33]!=0);
+        state.buttons=PS5_PAD_BUTTON_CROSS;inputSendBudget=0;stream.input(state,100002);assert(sent.size()==1);
+        inputSendBudget=1;stream.input(state,100003);assert(sent.size()==2&&sent.back()[25]==0x10);
+        state.buttons=0;inputSendBudget=0;stream.input(state,100004);assert(sent.size()==2);
+        inputSendBudget=1;stream.input(state,100005);assert(sent.size()==3&&sent.back()[25]==0);
+        inputSendBudget=-1;opennow::InputQueue tunedQueue;tunedQueue.move(10,-11);sent.clear();sentSids.clear();stream.events(tunedQueue,200000);
+        assert(sent==std::vector<Bytes>{wire::mouseMove(10,-11,3,200000,200)}&&sentSids==std::vector<std::uint16_t>{4});
+        tunedQueue.button(1,true);stream.events(tunedQueue,200001);assert(sentSids.back()==0);
+        stream.stop();clean();
+    }
+    {
+        assert(stream.start(session(),"test"));keyframeRequests=referenceResets=0;
+        stream.tick(1000000);media.frames=1;stream.tick(2000000);stream.tick(9999999);
+        assert(!stream.failed()&&keyframeRequests==0);stream.tick(10000000);
+        assert(!stream.failed()&&keyframeRequests==1&&referenceResets==1);stream.tick(13999999);
+        assert(!stream.failed()&&keyframeRequests==1);stream.tick(14000000);
+        assert(stream.failed()&&std::strstr(stream.status(),"stopped decoding"));clean();
+        assert(stream.start(session(),"test"));keyframeRequests=0;media.frames=1;stream.tick(1000000);stream.tick(9000000);
+        assert(keyframeRequests==1);media.frames=2;stream.tick(10000000);stream.tick(17999999);
+        assert(!stream.failed()&&keyframeRequests==1);stream.tick(18000000);assert(keyframeRequests==2);
+        media.presented=1;stream.tick(19000000);stream.tick(26999999);assert(!stream.failed());stream.stop();clean();
+        assert(stream.start(session(),"test"));keyframeRequests=referenceResets=mediaVideoCalls=0;mediaVideoAccepts=false;
+        std::uint8_t bytes[]={0,0,0,1,0x41};PeerVideoPacket packet{};packet.data=bytes;packet.size=sizeof(bytes);
+        rtpStats.access_units_dropped=1;processTime=1000000;videoCallback(&packet,videoContext);
+        assert(referenceResets==1&&keyframeRequests==1&&mediaVideoCalls==1);
+        processTime=1100000;videoCallback(&packet,videoContext);assert(referenceResets==1&&keyframeRequests==1);
+        processTime=1250000;videoCallback(&packet,videoContext);assert(keyframeRequests==2);
+        stream.stop();clean();videoCallback(&packet,videoContext);assert(mediaVideoCalls==3);
+        mediaVideoAccepts=true;rtpStats={};processTime=0;
+    }
+    {
+        const auto warning=command(0x104,{60,0,0,0}),clear=command(0x105,{0,0,0,0});
+        assert(stream.start(session(),"test"));processTime=123456;
+        receive(warning,4);assert(!stream.sessionTimer().active);
+        receive(warning);assert(stream.sessionTimer().active&&stream.sessionTimer().timerType==4&&stream.sessionTimer().secondsLeft==60&&stream.sessionTimer().receivedAt==123456);
+        receive({4,1,4,0,7});assert(stream.sessionTimer().secondsLeft==60);
+        const auto decoy=command(0x199,{9,1,4,0,0x80,4,0,0x10});receive(decoy);assert(!stream.failed());
+        auto large=command(0x199,Bytes(80));large.insert(large.end(),clear.begin(),clear.end());receive(large);
+        assert(!stream.sessionTimer().active&&stream.sessionTimer().timerType==5);
+        processTime=0;dataCallback(v3,sizeof(v3),dataContext,0);receive(warning);
+        stream.tick(1000000);assert(stream.sessionTimer().active);
+        opennow::InputQueue warningQueue;warningQueue.button(1,true);inputSendBudget=0;stream.events(warningQueue,1000001);
+        assert(stream.sessionTimer().active);inputSendBudget=-1;stream.events(warningQueue,1000002);
+        assert(!stream.sessionTimer().active);stream.stop();clean();
+        assert(stream.start(session(),"test"));dataCallback(v3,sizeof(v3),dataContext,0);
+        PS5_PadData neutral{};neutral.connected=true;neutral.leftStick={128,128};neutral.rightStick={128,128};
+        stream.input(neutral,100000);receive(warning);stream.input(neutral,116000);
+        assert(stream.sessionTimer().active);
+        neutral.leftStick.x=200;inputSendBudget=0;stream.input(neutral,132000);assert(stream.sessionTimer().active);
+        inputSendBudget=-1;stream.input(neutral,132001);assert(!stream.sessionTimer().active);
+        receive(warning);sentSids.clear();stream.stop();assert(!sentSids.empty()&&sentSids.back()==0);clean();
+        opennow::control::Command parsed;
+        for(const auto& malformed:std::vector<Bytes>{{4,1},{4,1,4,0,1},Bytes(65540)}){
+            opennow::control::Reader reader(malformed.data(),malformed.size());assert(!reader.next(parsed)&&!reader.valid());
+        }
+        Bytes tooMany(257*4);opennow::control::Reader reader(tooMany.data(),tooMany.size());unsigned count=0;
+        while(reader.next(parsed))++count;assert(count==256&&!reader.valid());
+        for(std::uint32_t code:{0x80030023U,0x80040010U,0x80049999U}){
+            assert(stream.start(session(),"test"));receive(warning);
+            Bytes payload;wire::be(payload,code,4);payload.insert(payload.end(),{0x37,0,0,0,0x10,0,4,0x80});receive(command(0x109,payload));
+            assert(stream.failed()&&!stream.inputReady()&&!stream.sessionTimer().active);
+            const auto termination=stream.serverTermination();assert(termination.present&&termination.wireCode==code);
+            if(code==0x80030023U){assert(termination.reason==0x38&&termination.extendedCode==0x80030007&&termination.resumable==false);}
+            else if(code==0x80040010U){assert(termination.reason==0x37&&termination.extendedCode==0x80040010&&termination.resumable==true);}
+            else assert(!termination.reason&&!termination.extendedCode&&!termination.resumable);
+            stream.tick(1000000);clean();assert(stream.serverTermination().wireCode==code);
+        }
+        assert(stream.start(session(),"test"));assert(!stream.serverTermination().present);stream.stop();clean();
+    }
+    {
+        assert(stream.start(session(),"test"));controlOpen=true;controlSent.clear();
+        stream.tick(1000000);
+        const auto first=opennow::webrtc::qosPacket({1,0});
+        assert(controlSent==std::vector<Bytes>{Bytes(first.begin(),first.end())});
+        stream.tick(1049999);assert(controlSent.size()==1);
+        controlSendFails=true;stream.tick(1050000);assert(controlSent.size()==1);
+        controlSendFails=false;stream.tick(1100000);
+        const auto second=opennow::webrtc::qosPacket({2,9000});
+        assert(controlSent.size()==2&&controlSent.back()==Bytes(second.begin(),second.end()));
+        stream.stop();clean();assert(stream.start(session(),"test"));controlSent.clear();stream.tick(2000000);
+        assert(controlSent==std::vector<Bytes>{Bytes(first.begin(),first.end())});stream.stop();clean();controlOpen=false;
+    }
+    {
+        const auto rumble=command(0x10b,{1,0,6,0,0,0,0x34,0x12,0x78,0x56});
+        const auto stopRumble=command(0x10b,{1,0,6,0,0,0,0,0,0,0});opennow::Rumble result;
+        assert(stream.start(session(),"test"));receive(rumble);assert(!stream.takeRumble(result));
+        dataCallback(v3,sizeof(v3),dataContext,0);receive(rumble,4);assert(!stream.takeRumble(result));
+        receive(rumble);assert(stream.takeRumble(result)&&result.controllerId==0&&result.lowFrequency==0x1234&&result.highFrequency==0x5678&&result.durationMs==1000);
+        assert(!stream.takeRumble(result));receive(rumble,0);receive(stopRumble);
+        assert(stream.takeRumble(result)&&!result.lowFrequency&&!result.highFrequency);
+        Bytes tooMany(256*4);tooMany.insert(tooMany.end(),rumble.begin(),rumble.end());receive(tooMany);assert(!stream.takeRumble(result));
+        auto oversized=rumble;oversized.resize(65540);receive(oversized);assert(!stream.takeRumble(result));
+        receive(rumble);receive(command(0x10b,{1,0,6,0,1,0,1,0,1,0}));assert(stream.takeRumble(result)&&result.controllerId==0&&result.lowFrequency==0x1234);
+        receive(rumble);dataClosed(dataContext);assert(!stream.takeRumble(result));stream.tick(1000000);clean();
+        assert(stream.start(session(),"test"));dataCallback(v2,sizeof(v2),dataContext,0);assert(!stream.takeRumble(result));
+        receive(rumble);stream.stop();receive(rumble);assert(!stream.takeRumble(result));clean();
     }
 }

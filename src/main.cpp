@@ -3,6 +3,7 @@
 #include "gfn.hpp"
 #include "app_storage.h"
 #include "settings_file.hpp"
+#include "session_file.hpp"
 #include "ui/stream_store.hpp"
 #include "http.hpp"
 #include "random.hpp"
@@ -12,6 +13,7 @@
 #include "input/stream_keyboard.hpp"
 #include "input/touch_mouse.hpp"
 #include "input/launcher_mouse.hpp"
+#include "input/rumble_output.hpp"
 #include "ui/tv_ui.hpp"
 #include "ui/artwork.hpp"
 #include "stream/native/gpu_presenter.hpp"
@@ -60,6 +62,8 @@ bool publishedStream=false;
 bool publishedInputReady=false;
 bool publishedSession=false;
 bool publishedStreamFailure=false;
+opennow::RumbleNotice publishedRumble{};
+std::uint64_t publishedStreamGeneration=0;
 opennow::StreamSettings publishedDefaults{};
 opennow::StreamSettings publishedLaunch{};
 bool artworkWanted=true;
@@ -163,6 +167,7 @@ void* worker(void*) {
         ps5::demo::requestStop();return nullptr;
     }
     auto& http=*activeHttp;
+    static opennow::Http refreshHttp;
     // One process-lifetime worker owns these large bounded objects.
     static opennow::Login login(opennow::Http::request,&http,opennow::appStorage::accountPath());
     unsigned char random[16]; char id[37]{};
@@ -172,7 +177,7 @@ void* worker(void*) {
     }
     random[6]=(random[6]&15)|64; random[8]=(random[8]&63)|128;
     std::snprintf(id,sizeof(id),"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",random[0],random[1],random[2],random[3],random[4],random[5],random[6],random[7],random[8],random[9],random[10],random[11],random[12],random[13],random[14],random[15]);
-    static opennow::Cloud cloud(opennow::Http::request,&http);
+    static opennow::Cloud cloud(opennow::Http::request,&http,opennow::Http::allowCloudEndpoint);
 #ifndef OPENNOW_HOST_PREVIEW
     static opennow::Stream stream(media);
 #endif
@@ -181,11 +186,40 @@ void* worker(void*) {
     publish(restoring);
     login.restore(id,sceKernelGetProcessTime()/1000000);
     bool catalogLoaded=false,streamAttempted=false;
+    std::uint64_t streamGeneration=0;
+    opennow::sessionFile::Saved retainedProfile;
+    bool resumeAllowed=true,profileSaveFailed=false;
+    const auto retainProfile=[&] {
+        const auto& session=cloud.session();
+        if(!*session.id||(cloud.view().state!=CloudState::queued&&cloud.view().state!=CloudState::ready))return true;
+        if(!*login.userId())return false;
+        if(!std::strcmp(retainedProfile.owner,login.userId())&&!std::strcmp(retainedProfile.sessionId,session.id)&&
+           retainedProfile.settings==session.settings&&retainedProfile.audioChannels==session.audioChannels&&retainedProfile.resumeAllowed==resumeAllowed)return true;
+        return opennow::sessionFile::save(OPENNOW_SESSION_PATH,login.userId(),session,resumeAllowed)==0&&
+            opennow::sessionFile::load(OPENNOW_SESSION_PATH,login.userId(),retainedProfile)==opennow::sessionFile::Status::loaded;
+    };
     char streamFailure[192]{};
     opennow::ui::StreamStore store;
     pthread_mutex_lock(&viewMutex);const bool artworkStart=artworkWanted;pthread_mutex_unlock(&viewMutex);
     store.load(OPENNOW_SETTINGS_PATH,opennow::gpu::bestSettings(),artworkStart,opennow::gpu::settingsAvailable);
     auto launchSettings=store.defaults;
+    const auto recoverSession=[&](std::uint64_t now) {
+        profileSaveFailed=false;
+        opennow::Session retainedSession;
+        const bool retained=opennow::sessionFile::load(OPENNOW_SESSION_PATH,login.userId(),retainedProfile)==opennow::sessionFile::Status::loaded;
+        if(retained) {
+            std::snprintf(retainedSession.id,sizeof(retainedSession.id),"%s",retainedProfile.sessionId);
+            retainedSession.settings=retainedProfile.settings;retainedSession.audioChannels=retainedProfile.audioChannels;
+        }
+        const auto result=cloud.recover(login.cloudToken(),id,now,store.defaults,audioCapacity,
+            retained?&retainedSession:nullptr,!retained||retainedProfile.resumeAllowed);
+        resumeAllowed=!retained||std::strcmp(cloud.session().id,retainedSession.id)||retainedProfile.resumeAllowed;
+        if(retained&&result==opennow::RecoveryResult::none){opennow::sessionFile::remove(OPENNOW_SESSION_PATH);retainedProfile={};}
+        if(*cloud.session().id) {
+            launchSettings=cloud.session().settings;
+            pthread_mutex_lock(&viewMutex);publishedLaunch=launchSettings;pthread_mutex_unlock(&viewMutex);
+        }
+    };
     char rejected[128]{};
     opennow::Game rejectedGame{};
     pthread_mutex_lock(&viewMutex);publishedDefaults=store.defaults;publishedSettings=store.info;pthread_mutex_unlock(&viewMutex);
@@ -195,15 +229,20 @@ void* worker(void*) {
         const int action=takeCommand(request);
         if(action==10||action==11) {
             http.cancelled.store(false);
+            refreshHttp.cancelled.store(true);
 #ifndef OPENNOW_HOST_PREVIEW
             stream.stop();
 #endif
             streamAttempted=false;rejected[0]=0;
-            const bool stopped=!*cloud.session().id||cloud.stop(login.cloudToken(),id);
+            login.finishAsync(sceKernelGetProcessTime()/1000000);
+            const bool hadSession=*cloud.session().id;
+            const bool stopped=cloud.stop(login.cloudToken(),id);
+            if(stopped&&(hadSession||action==11)){opennow::sessionFile::remove(OPENNOW_SESSION_PATH);retainedProfile={};profileSaveFailed=false;}
             if(action==10){ps5::demo::requestStop();return nullptr;}
             if(stopped) {
                 login.cancel();cloud.reset();catalogLoaded=false;streamFailure[0]=0;
             }
+            refreshHttp.cancelled.store(false);
         }
         if (action==2) {
             http.cancelled.store(false);
@@ -211,10 +250,11 @@ void* worker(void*) {
             stream.stop();
 #endif
             streamAttempted=false;
-            cloud.stop(login.cloudToken(),id);
+            if(cloud.stop(login.cloudToken(),id)){opennow::sessionFile::remove(OPENNOW_SESSION_PATH);retainedProfile={};profileSaveFailed=false;}
         }
         if (action==1) {
             http.cancelled.store(false);
+            refreshHttp.cancelled.store(true);login.stopAsync();refreshHttp.cancelled.store(false);
             if(!*cloud.session().id) {cloud.reset();catalogLoaded=false;}
             streamAttempted=false;streamFailure[0]=0;
             opennow::View v; v.state=State::requesting;
@@ -229,12 +269,7 @@ void* worker(void*) {
             store.artwork(OPENNOW_SETTINGS_PATH,wanted);
         }
         const auto now=sceKernelGetProcessTime();
-        // Renew between games: blocking login HTTPS must not stall media processing.
-#ifndef OPENNOW_HOST_PREVIEW
-        if (!stream.active()) login.tick(now/1000000);
-#else
-        login.tick(now/1000000);
-#endif
+        login.tickAsync(now/1000000,opennow::Http::request,&refreshHttp);
         if(login.view().state==State::authenticated) {
             if(!catalogLoaded) {
                 publish(login.view());
@@ -243,6 +278,7 @@ void* worker(void*) {
                 pthread_mutex_lock(&viewMutex);publishedLibrary=cloud.library();pthread_mutex_unlock(&viewMutex);
                 cloud.load(login.cloudToken(),id,"");
                 catalogLoaded=true;
+                recoverSession(now/1000000);
             }
             const bool idle=!*cloud.session().id;
             if(action==5&&idle&&request.index>=0) {
@@ -254,6 +290,7 @@ void* worker(void*) {
                     std::snprintf(rejected,sizeof(rejected),"%s",opennow::ui::settingsProblem(request.settings,opennow::gpu::settingsAvailable(request.settings)));
                     pthread_mutex_lock(&viewMutex);publishedLaunch=request.settings;pthread_mutex_unlock(&viewMutex);
                 } else {
+                    resumeAllowed=true;profileSaveFailed=false;
                     launchSettings=*chosen;
                     pthread_mutex_lock(&viewMutex);
                     publishedCloud.state=CloudState::starting;publishedLaunch=launchSettings;
@@ -268,7 +305,11 @@ void* worker(void*) {
             }
             if((action==6||action==7)&&idle){streamFailure[0]=0;cloud.loadPage(CatalogSource::browse,request.index>0?static_cast<unsigned>(request.index):0,login.cloudToken(),id,request.direction);}
             if(action==12&&idle)cloud.loadPage(CatalogSource::library,request.index>0?static_cast<unsigned>(request.index):0,login.cloudToken(),id,request.direction);
-            if(action==15&&idle){streamFailure[0]=0;rejected[0]=0;cloud.dismissLaunchError();}
+            if(action==15&&idle) {
+                streamFailure[0]=0;rejected[0]=0;
+                if(cloud.recoveryRequired())recoverSession(now/1000000);
+                else cloud.dismissLaunchError();
+            }
             if(action==8&&idle){
                 streamFailure[0]=0;
                 char search[128];
@@ -278,18 +319,35 @@ void* worker(void*) {
             if(const int pending=command.load();pending==2||pending==10||pending==11)continue;
             cloud.tick(login.cloudToken(),id,now/1000000);
             if(const int pending=command.load();pending==2||pending==10||pending==11)continue;
-#ifndef OPENNOW_HOST_PREVIEW
-            if(cloud.view().state==CloudState::ready&&!streamAttempted){streamAttempted=true;inputQueue.clear();stream.start(cloud.session(),id);}
-            if(stream.active()){
-                stream.tick(now);PS5_PadData padState{};pthread_mutex_lock(&viewMutex);padState=publishedPad;pthread_mutex_unlock(&viewMutex);stream.input(padState,now);stream.events(inputQueue,now);
+            if(!profileSaveFailed&&!retainProfile()) {
+                profileSaveFailed=true;streamAttempted=true;
+                std::snprintf(streamFailure,sizeof(streamFailure),"Could not save the session resume profile");
             }
-            if(stream.failed()) {
-                std::snprintf(streamFailure,sizeof(streamFailure),"%s",stream.status());
-                stream.stop();streamAttempted=false;
-                cloud.stop(login.cloudToken(),id);
+#ifndef OPENNOW_HOST_PREVIEW
+            if(cloud.view().state==CloudState::ready&&!streamAttempted) {
+                launchSettings=cloud.session().settings;
+                pthread_mutex_lock(&viewMutex);publishedLaunch=launchSettings;pthread_mutex_unlock(&viewMutex);
+                streamAttempted=true;
+                if(!acceptSettings(launchSettings))std::snprintf(streamFailure,sizeof(streamFailure),"The accepted session profile is not qualified for this PS5");
+                else {++streamGeneration;inputQueue.clear();stream.start(cloud.session(),id);}
             }
 #endif
         }
+#ifndef OPENNOW_HOST_PREVIEW
+        if(stream.active()) {
+            stream.tick(now);PS5_PadData padState{};pthread_mutex_lock(&viewMutex);padState=publishedPad;pthread_mutex_unlock(&viewMutex);
+            stream.input(padState,now);stream.events(inputQueue,now);
+        }
+        if(stream.failed()) {
+            std::snprintf(streamFailure,sizeof(streamFailure),"%s",stream.status());
+            const auto termination=stream.serverTermination();
+            stream.stop();
+            if(termination.present&&termination.resumable==false) {
+                resumeAllowed=false;retainProfile();
+                if(cloud.stop(login.cloudToken(),id)){opennow::sessionFile::remove(OPENNOW_SESSION_PATH);retainedProfile={};}
+            }
+        }
+#endif
         pthread_mutex_lock(&viewMutex);
         if(!publishedStream||++publishTick%50==0){publishedCloud=cloud.view();publishedLibrary=cloud.library();}
         else {
@@ -304,13 +362,24 @@ void* worker(void*) {
         publishedSession=*cloud.session().id!=0;
         publishedStreamFailure=*streamFailure!=0;
         if(*streamFailure) {
-            if(publishedSession)std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"%.75s | Cleanup: %.100s",streamFailure,cloud.view().message);
+            if(publishedSession){publishedCloud.state=CloudState::failed;std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"%.125s | Session retained. Stop or relaunch to resume",streamFailure);}
             else std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"%s",streamFailure);
         }
 #ifndef OPENNOW_HOST_PREVIEW
         publishedStream=stream.active();
         publishedInputReady=stream.inputReady();
-        if(streamAttempted)std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"%s",stream.status());
+        publishedStreamGeneration=streamGeneration;
+        opennow::Rumble rumble;
+        if(stream.takeRumble(rumble))publishedRumble={rumble,now,publishedRumble.revision+1,streamGeneration};
+        if(stream.active()) {
+            std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"%s",stream.status());
+            const auto& timer=stream.sessionTimer();
+            if(timer.active) {
+                const auto elapsed=now>=timer.receivedAt?(now-timer.receivedAt)/1000000:0;
+                const auto left=elapsed<timer.secondsLeft?timer.secondsLeft-elapsed:0;
+                std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"Idle warning: move a control within %llu seconds",static_cast<unsigned long long>(left));
+            }
+        }
 #endif
         pthread_mutex_unlock(&viewMutex);
         // A cancellation during a blocking request must win over its response.
@@ -414,10 +483,13 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     static opennow::View v;
     static opennow::CloudView cv,lv;
     bool streaming=false,inputReady=false,sessionOwned=false,streamFailed=false;
+    opennow::RumbleNotice rumbleNotice;
+    std::uint64_t rumbleSession=0;
     opennow::StreamSettings defaults,launch;opennow::ui::SettingsInfo settings;opennow::ui::AudioInfo audio;
     pthread_mutex_lock(&viewMutex);
     v=published;cv=publishedCloud;lv=publishedLibrary;streaming=publishedStream;inputReady=publishedInputReady;sessionOwned=publishedSession;
     streamFailed=publishedStreamFailure;defaults=publishedDefaults;launch=publishedLaunch;settings=publishedSettings;audio=publishedAudio;
+    rumbleNotice=publishedRumble;rumbleSession=publishedStreamGeneration;
     pthread_mutex_unlock(&viewMutex);
     if(settings.revision!=draftRevision){draft=defaults;draftRevision=settings.revision;adjusted=0;numberEdit={};confirmFixed=false;}
     const auto caps=streamCaps();
@@ -465,13 +537,24 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     backHeld=backHeld&&streaming&&!keyboard.open&&(data.buttons&PS5_PAD_BUTTON_SQUARE);
     PS5_PadData gamePad=data;
     gamePad.buttons=(data.buttons&~(PS5_PAD_BUTTON_TOUCH_PAD|suppressed))|(backHeld?PS5_PAD_BUTTON_TOUCH_PAD:0);
-    if(keyboard.open)gamePad=PS5_PadData{};
+    if(keyboard.open) {
+        gamePad=PS5_PadData{};gamePad.connected=data.connected;
+        gamePad.leftStick={128,128};gamePad.rightStick={128,128};
+    }
     else if(launcher.active) {
         gamePad=PS5_PadData{};gamePad.connected=data.connected;
         gamePad.leftStick={128,128};gamePad.rightStick={128,128};
         gamePad.buttons=backHeld?PS5_PAD_BUTTON_TOUCH_PAD:0;
     }
     const auto now=sceKernelGetProcessTime();
+    static opennow::RumbleOutput rumbleOutput;
+    static PS5_PadVibration previousMotors{};
+    const auto motors=rumbleOutput.update(rumbleNotice,rumbleSession,
+        streaming&&inputReady&&data.connected&&!keyboard.open&&!launcher.active&&command.load()==0,
+        launch.vibration_intensity,now);
+    if(pad>=0&&(motors.large_motor!=previousMotors.large_motor||motors.small_motor!=previousMotors.small_motor)) {
+        if(scePadSetVibration(pad,&motors)>=0)previousMotors=motors;
+    }
     const bool pointerInput=streaming&&inputReady&&!keyboard.open;
     const auto motion=touchMouse.update(data,pointerInput);
     const auto pointer=launcher.update(data,now,pointerInput);
@@ -864,7 +947,7 @@ int main() {
     if(threadResult==0)(void)scePthreadJoin(thread,nullptr);
     artCache=nullptr;
     opennow::gpu::shutdown();
-    if(pad>=0)(void)scePadClose(pad);
+    if(pad>=0){const PS5_PadVibration stopped{};(void)scePadSetVibration(pad,&stopped);(void)scePadClose(pad);}
     delete activeHttp;activeHttp=nullptr;
     (void)sceSystemServiceLoadExec("exit",nullptr);
     // Do not return through the native C runtime if the system rejects exit.

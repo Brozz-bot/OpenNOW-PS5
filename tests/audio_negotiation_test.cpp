@@ -55,6 +55,16 @@ int main() {
  const auto micAnswer=sdp::AdaptAnswerSdpToOffer(video+stereo,offer+microphone,StreamSettings{},&stereoChoice);
  assert(stereoChoice.channels==2&&micAnswer.find("m=audio 9 UDP/TLS/RTP/SAVPF 111 63")!=std::string::npos);
  assert(micAnswer.find("m=audio")==micAnswer.rfind("m=audio")&&micAnswer.find("multiopus")==std::string::npos);
+ const auto rawDuplex=video+stereo+"a=sendrecv\r\n";
+ const auto receiveOnly=sdp::AdaptAnswerSdpToOffer(rawDuplex,offer,StreamSettings{});
+ assert(receiveOnly.find("a=sendrecv")==std::string::npos);
+ assert(receiveOnly.find("a=recvonly\r\n",receiveOnly.find("m=audio"))!=std::string::npos);
+ const auto bandwidth=sdp::AdaptAnswerSdpToOffer("v=0\r\nb=AS:333\r\n"+video+"b=AS:1\r\nb=TIAS:1000\r\n"+stereo+"b=AS:128\r\n",offer,StreamSettings{});
+ assert(bandwidth.find("b=AS:333\r\n")<bandwidth.find("m=video"));
+ assert(bandwidth.find("b=AS:128\r\n")!=std::string::npos&&bandwidth.find("b=AS:128\r\n")>bandwidth.find("m=audio"));
+ const auto videoBandwidth=bandwidth.substr(bandwidth.find("m=video"),bandwidth.find("m=audio")-bandwidth.find("m=video"));
+ assert(videoBandwidth.find("b=AS:25000\r\n")!=std::string::npos&&videoBandwidth.find("b=AS:")==videoBandwidth.rfind("b=AS:"));
+ assert(videoBandwidth.find("b=TIAS:")==std::string::npos);
  assert(sdp::AdaptAnswerSdpToOffer(video+stereo,offer+video,StreamSettings{},&chosen).empty());
  auto dynamic=audio::selectFormat("m=audio 9 RTP/AVP 107 108\r\na=rtpmap:107 opus/48000/2\r\na=rtpmap:108 red/48000/2\r\na=fmtp:108 107/107\r\n",2);
  assert(dynamic.payload==107&&dynamic.redPayload==108);

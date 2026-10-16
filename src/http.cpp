@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "http.hpp"
 #include "cloud.hpp"
+#include "cloud_endpoint.hpp"
 #include <curl/curl.h>
 #include <cstdio>
 #include <cstdlib>
@@ -29,14 +30,30 @@ std::size_t Http::write(char* bytes,std::size_t size,std::size_t count,void* ptr
 int Http::progress(void* ptr,curl_off_t,curl_off_t,curl_off_t,curl_off_t) noexcept {
     return static_cast<Http*>(ptr)->cancelled.load() ? 1 : 0;
 }
+bool Http::allowCloudEndpoint(void* ptr,const char* url) noexcept {
+    auto& self=*static_cast<Http*>(ptr);
+    char origin[272];if(!cloudControlOrigin(url,origin,sizeof(origin)))return false;
+    for(unsigned i=0;i<self.cloudOriginCount_;++i)if(!std::strcmp(self.cloudOrigins_[i],origin))return true;
+    if(self.cloudOriginCount_==64)return false;
+    std::memcpy(self.cloudOrigins_[self.cloudOriginCount_++],origin,std::strlen(origin)+1);
+    return true;
+}
 Response Http::request(void* ptr,const char* method,const char* url,const char* body,const char* bearer,const char* device) noexcept {
     auto& self = *static_cast<Http*>(ptr);
     if (!self.buffer_) return {0,nullptr,0,"Could not initialize HTTPS"};
     secureErase(self.buffer_,self.size_); self.size_=0;
     if (self.cancelled.load()) return {0,nullptr,0,"Request cancelled"};
-    const bool cloud=trustedCloudUrl(url);
+    bool cloud=trustedCloudUrl(url);
+    if(!cloud)for(unsigned i=0;i<self.cloudOriginCount_;++i)
+        if(sameCloudControlOrigin(url,self.cloudOrigins_[i])){cloud=true;break;}
     if (!cloud && std::strncmp(url,"https://login.nvidia.com/",25) != 0)
         return {0,nullptr,0,"Endpoint not permitted"};
+    for(const char* value:{bearer,device})if(value) {
+        for(const auto* p=reinterpret_cast<const unsigned char*>(value);*p;++p)
+            if(*p<32||*p==127)return {0,nullptr,0,"Invalid HTTP header value"};
+    }
+    if((bearer&&std::strlen(bearer)>16384)||(device&&std::strlen(device)>240))
+        return {0,nullptr,0,"Oversized HTTP header value"};
     self.error_[0]=0;
     auto* easy = curl_easy_init();
     if (!easy) return {0,nullptr,0,"Could not create HTTPS request"};
@@ -49,13 +66,17 @@ Response Http::request(void* ptr,const char* method,const char* url,const char* 
     append("Origin: https://play.geforcenow.com");
     append("Referer: https://play.geforcenow.com/");
     append("Accept: application/json, text/plain, */*");
-    append(cloud ? "Content-Type: application/json" : "Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
+    const auto* path=std::strchr(url+8,'/');
+    const bool cloudmatch=cloud&&path&&std::strncmp(path,"/v2/",4)==0;
+    const bool nettest=cloudmatch&&std::strncmp(path,"/v2/nettestsession",18)==0;
+    append(cloudmatch&&!nettest?"Content-Type: text/plain":cloud?"Content-Type: application/json":"Content-Type: application/x-www-form-urlencoded; charset=UTF-8");
     char authorization[16512]{};
     if (bearer) { std::snprintf(authorization,sizeof(authorization),"Authorization: %s %s",cloud ? "GFNJWT" : "Bearer",bearer); append(authorization); }
     if (cloud) {
         append("nv-client-id: ec7e38d4-03af-4b58-b131-cfb0495903ab");append("nv-client-type: NATIVE");
-        append("nv-client-streamer: NVIDIA-CLASSIC");append("nv-client-version: 2.0.80.173");
-        append("nv-device-os: WINDOWS");append("nv-device-type: DESKTOP");append("nv-device-make: UNKNOWN");append("nv-device-model: UNKNOWN");append("nv-browser-type: CHROME");
+        append("nv-client-streamer: NVIDIA-CLASSIC");append("nv-client-version: 2.0.87.131");
+        append("nv-device-os: WINDOWS");append("nv-device-type: DESKTOP");append("nv-device-make: UNKNOWN");append("nv-device-model: UNKNOWN");
+        append("x-nv-client-identity: GFN-PC/30.0 (Windows NT 10.0) BifrostClientSDK/4.9 (38495286)");
         if(device){char id[256];std::snprintf(id,sizeof(id),"x-device-id: %s",device);append(id);}
     }
     if (device && !cloud) {
@@ -68,12 +89,14 @@ Response Http::request(void* ptr,const char* method,const char* url,const char* 
     }
     curl_easy_setopt(easy,CURLOPT_ERRORBUFFER,self.error_);
     curl_easy_setopt(easy,CURLOPT_URL,url);
-    curl_easy_setopt(easy,CURLOPT_USERAGENT,"Mozilla/5.0 (X11; Linux x86_64; Steam Deck) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
+    curl_easy_setopt(easy,CURLOPT_USERAGENT,cloud?"GFN-PC/30.0 (Windows NT 10.0) BifrostClientSDK/4.9 (38495286)":"Mozilla/5.0 (X11; Linux x86_64; Steam Deck) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
     curl_easy_setopt(easy,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(easy,CURLOPT_FOLLOWLOCATION,0L);
     curl_easy_setopt(easy,CURLOPT_PROXY,"");
     curl_easy_setopt(easy,CURLOPT_CONNECTTIMEOUT,10L);
-    curl_easy_setopt(easy,CURLOPT_TIMEOUT,20L);
+    const bool discovery=cloudmatch&&!std::strcmp(method,"GET")&&
+        (!std::strncmp(path,"/v2/serverInfo",14)||!std::strcmp(path,"/v2/session"));
+    curl_easy_setopt(easy,CURLOPT_TIMEOUT,!cloud?5L:nettest||!std::strcmp(method,"DELETE")?8L:discovery?3L:20L);
     curl_easy_setopt(easy,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(easy,CURLOPT_WRITEFUNCTION,&Http::write);
     curl_easy_setopt(easy,CURLOPT_WRITEDATA,&self);
@@ -86,8 +109,9 @@ Response Http::request(void* ptr,const char* method,const char* url,const char* 
     console_curl_setup(easy);
     curl_easy_setopt(easy,CURLOPT_CAINFO,"/app0/assets/cacert.pem");
 #endif
-    if (std::strcmp(method,"POST")==0) {
-        curl_easy_setopt(easy,CURLOPT_POST,1L);
+    if (!std::strcmp(method,"POST")||!std::strcmp(method,"PUT")||!std::strcmp(method,"PATCH")) {
+        if(!std::strcmp(method,"POST"))curl_easy_setopt(easy,CURLOPT_POST,1L);
+        else curl_easy_setopt(easy,CURLOPT_CUSTOMREQUEST,method);
         curl_easy_setopt(easy,CURLOPT_POSTFIELDS,body ? body : "");
         curl_easy_setopt(easy,CURLOPT_POSTFIELDSIZE,static_cast<long>(body ? std::strlen(body) : 0));
     }
