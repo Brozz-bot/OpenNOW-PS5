@@ -1040,6 +1040,7 @@ int main(int argc,char** argv) {
     return 0;
 #else
     sceNetInit();
+    storageError=opennow::appStorage::initialize();
     const auto forwarding=opennow::forwarder::initialize();
     if(opennow::forwarder::fatalStartup()) {
         startupFailure=true;forwardLaunchMode.store(false);
@@ -1051,7 +1052,6 @@ int main(int argc,char** argv) {
         (void)sceSystemServiceLoadExec("exit",nullptr);
         for(;;)sceKernelUsleep(1000000);
     }
-    storageError=opennow::appStorage::initialize();
     opennow::gpu::initialize();
     sceUserServiceInitialize(nullptr); scePadInit();
     activeHttp=new opennow::Http;

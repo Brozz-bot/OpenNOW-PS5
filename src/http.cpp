@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "http.hpp"
+#include "app_storage.h"
 #include "cloud.hpp"
 #include "cloud_endpoint.hpp"
 #include <curl/curl.h>
@@ -107,7 +108,7 @@ Response Http::request(void* ptr,const char* method,const char* url,const char* 
     curl_easy_setopt(easy,CURLOPT_SSL_VERIFYHOST,2L);
 #ifdef OPENNOW_PS5
     console_curl_setup(easy);
-    curl_easy_setopt(easy,CURLOPT_CAINFO,"/app0/assets/cacert.pem");
+    curl_easy_setopt(easy,CURLOPT_CAINFO,OPENNOW_CACERT_PATH);
 #endif
     if (!std::strcmp(method,"POST")||!std::strcmp(method,"PUT")||!std::strcmp(method,"PATCH")) {
         if(!std::strcmp(method,"POST"))curl_easy_setopt(easy,CURLOPT_POST,1L);

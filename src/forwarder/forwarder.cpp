@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "forwarder.hpp"
+#include "../app_storage.h"
 #include "files.hpp"
 #include "image.hpp"
 #include "launch_args.hpp"
@@ -247,7 +248,9 @@ bool paramJson(const Game& game,const char* titleId,char* out,std::size_t size) 
         set(root.get(),"contentId",content)&&set(english,"titleName",game.title)&&saveJson(root.get(),out,size);
 }
 
-Result create(const Game& game,const Options& options,const Job& job) noexcept {
+Result create(const Game& game,const Options& requested,const Job& job) noexcept {
+    Options options=requested;
+    if(!options.paths.templateRoot)options.paths.templateRoot=opennow_app_file("assets/forwarder-template");
     Guard guard;
     if(!validGame(game)||!bounded(game.art,sizeof(game.art))||!bounded(game.hero,sizeof(game.hero))||!pathValid(options.paths))return result(Code::invalidGame);
     if(cancelled(job))return result(Code::cancelled);
@@ -383,6 +386,7 @@ const char* message(Code code) noexcept {
     case Code::templateError:return "The shared forwarder template is missing or invalid.";
     case Code::ioError:return "Could not finish the tile operation. Check storage and free space.";
     case Code::unsafeElevation:return "Filesystem elevation was not confirmed. Close OpenNOW and check elfldr.";
+    case Code::sandboxLost:return "OpenNOW could not find its own files after filesystem elevation. Close OpenNOW";
     }
     return "Forwarder operation failed.";
 }

@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/host-tests
+${CC:-cc} -std=c11 -O1 -g -c src/platform/app_paths.c -o build/host-tests/app-paths.o
 ${CC:-cc} -std=c11 -O1 -g -fsanitize=address,undefined -c src/vendor/cJSON.c -o build/host-tests/cJSON.o
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/gfn_test.cpp src/gfn.cpp build/host-tests/cJSON.o -pthread -o build/host-tests/gfn-test
 build/host-tests/gfn-test
@@ -9,7 +10,7 @@ ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
 build/host-tests/gfn-persistence-test
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/gfn_async_test.cpp src/gfn.cpp build/host-tests/cJSON.o -pthread -o build/host-tests/gfn-async-test
 build/host-tests/gfn-async-test
-${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/http_test.cpp src/http.cpp -lcurl -o build/host-tests/http-test
+${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/http_test.cpp src/http.cpp -lcurl build/host-tests/app-paths.o -o build/host-tests/http-test
 build/host-tests/http-test
 bash tools/test-app-storage.sh
 bash tools/test-forwarder.sh
@@ -33,7 +34,7 @@ build/host-tests/rumble-output-test
 ${CC:-cc} -O1 -g -fsanitize=address,undefined -c src/vendor/qrcodegen.c -o build/host-tests/qrcode.o
 link_flags=(-Wl,--gc-sections)
 if [[ $(uname -s) == Darwin ]]; then link_flags=(-Wl,-dead_strip); fi
-${CXX:-c++} -std=c++20 -O1 -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -DOPENNOW_HOST_PREVIEW -Isrc "${link_flags[@]}" tests/main_ui_test.cpp tests/host_entropy.cpp src/random.cpp src/demo_renderer.cpp src/ui/font.cpp src/ui/tv_ui.cpp src/ui/artwork.cpp src/cloud.cpp src/gfn.cpp build/host-tests/cJSON.o build/host-tests/qrcode.o -pthread -o build/host-tests/main-ui-test
+${CXX:-c++} -std=c++20 -O1 -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -DOPENNOW_HOST_PREVIEW -Isrc "${link_flags[@]}" tests/main_ui_test.cpp tests/host_entropy.cpp src/random.cpp src/demo_renderer.cpp src/ui/font.cpp src/ui/tv_ui.cpp src/ui/artwork.cpp src/cloud.cpp src/gfn.cpp build/host-tests/cJSON.o build/host-tests/qrcode.o -pthread build/host-tests/app-paths.o -o build/host-tests/main-ui-test
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/settings_file_test.cpp -o build/host-tests/settings-file-test
 build/host-tests/settings-file-test
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/session_file_test.cpp -o build/host-tests/session-file-test
@@ -58,7 +59,7 @@ python3 tests/gpu_shader_test.py
 
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/nvst_sdp_test.cpp src/stream/nvst_sdp.cpp src/stream/sdp.cpp -o build/host-tests/nvst-sdp-test
 build/host-tests/nvst-sdp-test
-${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -Wno-misleading-indentation -O1 -g -fsanitize=address,undefined -Isrc -Ivendor/libpeer/src tests/stream_lifecycle_test.cpp src/stream/stream.cpp src/stream/sdp.cpp src/stream/nvst_sdp.cpp src/stream/audio_receiver.cpp build/host-tests/cJSON.o -lopus -pthread -o build/host-tests/stream-lifecycle-test
+${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -Wno-misleading-indentation -O1 -g -fsanitize=address,undefined -Isrc -Ivendor/libpeer/src tests/stream_lifecycle_test.cpp src/stream/stream.cpp src/stream/sdp.cpp src/stream/nvst_sdp.cpp src/stream/audio_receiver.cpp build/host-tests/cJSON.o -lopus -pthread build/host-tests/app-paths.o -o build/host-tests/stream-lifecycle-test
 build/host-tests/stream-lifecycle-test
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc/stream tests/websocket_write_queue_test.cpp -o build/host-tests/websocket-queue-test
 build/host-tests/websocket-queue-test

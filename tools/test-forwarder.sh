@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/host-tests
+${CC:-cc} -std=c11 -O1 -g -c src/platform/app_paths.c -o build/host-tests/app-paths.o
 flags=(-O1 -g -fsanitize=address,undefined)
 cppflags=(-std=c++20 -Wall -Wextra -Werror "${flags[@]}" -Isrc)
 python3 tools/verify-forwarder-template.py
@@ -15,10 +16,10 @@ ${CXX:-c++} "${cppflags[@]}" tests/forward_launch_test.cpp tests/host_entropy.cp
 build/host-tests/forward-launch-test
 ${CXX:-c++} -std=c++20 "${flags[@]}" -Isrc -ffunction-sections -fdata-sections -DOPENNOW_HOST_PREVIEW -DOPENNOW_PS5=1 \
     -Wl,--gc-sections tests/forward_launch_worker_test.cpp tests/host_entropy.cpp src/random.cpp src/cloud.cpp src/gfn.cpp src/forwarder/launch_args.cpp \
-    build/host-tests/forwarder-cJSON.o -pthread -o build/host-tests/forward-launch-worker-test
+    build/host-tests/forwarder-cJSON.o -pthread build/host-tests/app-paths.o -o build/host-tests/forward-launch-worker-test
 build/host-tests/forward-launch-worker-test
 ${CXX:-c++} "${cppflags[@]}" tests/forwarder_image_test.cpp src/forwarder/image.cpp -o build/host-tests/forwarder-image-test
 build/host-tests/forwarder-image-test
-${CXX:-c++} "${cppflags[@]}" tests/forwarder_test.cpp src/forwarder/forwarder.cpp src/forwarder/image.cpp \
-    src/forwarder/launch_args.cpp build/host-tests/forwarder-cJSON.o build/host-tests/psfwd.o -lcrypto -pthread -o build/host-tests/forwarder-test
+${CXX:-c++} "${cppflags[@]}" tests/forwarder_test.cpp src/forwarder/forwarder.cpp src/forwarder/elevation.cpp src/forwarder/image.cpp \
+    src/forwarder/launch_args.cpp build/host-tests/forwarder-cJSON.o build/host-tests/psfwd.o -lcrypto -pthread build/host-tests/app-paths.o -o build/host-tests/forwarder-test
 build/host-tests/forwarder-test

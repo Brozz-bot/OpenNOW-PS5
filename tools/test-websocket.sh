@@ -11,11 +11,12 @@ for name in sha1 base64 platform_util constant_time; do
     ${CC:-cc} -std=c11 "${flags[@]}" -I"$source/include" -I"$source/library" \
         -c "$source/library/$name.c" -o "build/host-tests/ws-crypto/$name.o"
 done
+${CC:-cc} -std=c11 "${flags[@]}" -c src/platform/app_paths.c -o build/host-tests/app-paths.o
 for name in websocket_handshake websocket_client; do
     sources=("tests/${name}_test.cpp")
     libraries=()
     if [[ $name == websocket_client ]]; then
-        sources+=(src/stream/WebSocketClient.cpp)
+        sources+=(src/stream/WebSocketClient.cpp build/host-tests/app-paths.o)
         libraries+=(-lcurl)
     fi
     ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror "${flags[@]}" "${link_flags[@]}" \
