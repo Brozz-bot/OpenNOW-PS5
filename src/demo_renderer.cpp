@@ -13,6 +13,8 @@
 #endif
 #ifndef OPENNOW_HOST_PREVIEW
 #include <sys/event.h>
+#else
+#include <ctime>
 #endif
 
 #include <array>
@@ -289,85 +291,172 @@ void notify(std::string_view message) noexcept
     return glyphs.front().rows;
 }
 
-[[nodiscard]] constexpr std::size_t tiled_byte_offset(unsigned x, unsigned y) noexcept
-{
-    const std::uint32_t offset = ((y << 4) & 0x70U) ^ ((y << 5) & 0xf00U) ^ ((y << 9) & 0x1000U) ^
-                                 ((y << 8) & 0x4000U) ^ ((x << 2) & 0xcU) ^ ((x << 5) & 0x380U) ^
-                                 ((x << 4) & 0x400U) ^ ((x << 6) & 0x800U) ^ ((x << 9) & 0xa000U);
-    const std::uint32_t blocks_per_row = (frame_width + 127U) >> 7;
-    const std::uint32_t block_index = (y >> 7) * blocks_per_row + (x >> 7);
-
-    return (static_cast<std::size_t>(block_index) << 16) + offset;
-}
-
 #ifdef OPENNOW_GPU
 thread_local bool linear_canvas=false;
 #else
 constexpr bool linear_canvas=false;
 #endif
 
-void put_pixel_unchecked(std::uint32_t *pixels, unsigned x, unsigned y, Color color) noexcept
+struct TileTables
 {
-    auto *bytes = reinterpret_cast<std::uint8_t *>(pixels);
-    *reinterpret_cast<std::uint32_t *>(bytes + (linear_canvas ? std::size_t(y*frame_width+x)*4 : tiled_byte_offset(x, y))) =
-        static_cast<std::uint32_t>(color);
+    std::array<std::uint32_t, frame_width> x{};
+    std::array<std::uint32_t, frame_height> y{};
+};
+
+constexpr TileTables make_tile_tables() noexcept
+{
+    TileTables tables;
+    constexpr std::uint32_t blocks_per_row = (frame_width + 127U) >> 7;
+    for (std::uint32_t x = 0; x < frame_width; ++x)
+        tables.x[x] = ((x >> 7) << 16) | (((x << 2) & 0xcU) ^ ((x << 5) & 0x380U) ^ ((x << 4) & 0x400U) ^
+                                          ((x << 6) & 0x800U) ^ ((x << 9) & 0xa000U));
+    for (std::uint32_t y = 0; y < frame_height; ++y)
+        tables.y[y] = (((y >> 7) * blocks_per_row) << 16) |
+                      (((y << 4) & 0x70U) ^ ((y << 5) & 0xf00U) ^ ((y << 9) & 0x1000U) ^ ((y << 8) & 0x4000U));
+    return tables;
 }
 
-void fill_rect(std::uint32_t *pixels, unsigned x, unsigned y, unsigned width, unsigned height,
-               Color color) noexcept
-{
-    if (x >= frame_width || y >= frame_height)
-        return;
+constexpr TileTables tile_tables = make_tile_tables();
 
-    const unsigned right = width > frame_width - x ? frame_width : x + width;
-    const unsigned bottom = height > frame_height - y ? frame_height : y + height;
-    for (unsigned row = y; row < bottom; ++row)
+class PixelRow
+{
+  public:
+    PixelRow(std::uint32_t *pixels, unsigned y) noexcept
+        : bytes_{reinterpret_cast<std::uint8_t *>(pixels)}, linear_{linear_canvas}
     {
-        for (unsigned column = x; column < right; ++column)
-            put_pixel_unchecked(pixels, column, row, color);
+        if (linear_)
+            bytes_ += std::size_t(y) * frame_width * 4;
+        else
+            tile_ = tile_tables.y[y];
     }
+
+    std::uint32_t &operator[](unsigned x) const noexcept
+    {
+        if (linear_)
+            return reinterpret_cast<std::uint32_t *>(bytes_)[x];
+        const std::uint32_t column = tile_tables.x[x];
+        const std::uint32_t offset = ((tile_ & 0xffff0000U) + (column & 0xffff0000U)) | ((tile_ ^ column) & 0xffffU);
+        return *reinterpret_cast<std::uint32_t *>(bytes_ + offset);
+    }
+
+  private:
+    std::uint8_t *bytes_;
+    std::uint32_t tile_ = 0;
+    bool linear_;
+};
+
+[[nodiscard]] constexpr std::uint32_t blend(std::uint32_t background, std::uint32_t foreground,
+                                            unsigned alpha) noexcept
+{
+    const unsigned inverse = 255 - alpha;
+    std::uint32_t rb = (foreground & 0xff00ffU) * alpha + (background & 0xff00ffU) * inverse + 0x7f007fU;
+    std::uint32_t g = ((foreground >> 8) & 255U) * alpha + ((background >> 8) & 255U) * inverse + 127U;
+    rb = ((rb + ((rb >> 8) & 0xff00ffU) + 0x10001U) >> 8) & 0xff00ffU;
+    g = ((g + (g >> 8) + 1U) >> 8) & 255U;
+    return 0xff000000U | rb | (g << 8);
 }
 
-void blend_pixel(std::uint32_t *pixels, unsigned x, unsigned y, Color color, unsigned alpha) noexcept
+[[nodiscard]] constexpr unsigned scale_alpha(unsigned value, unsigned alpha) noexcept
 {
-    if (x >= frame_width || y >= frame_height || alpha == 0)
+    const unsigned product = value * alpha + 127U;
+    return (product + 1U + (product >> 8)) >> 8;
+}
+
+void blend_into(std::uint32_t &pixel, Color color, unsigned alpha) noexcept
+{
+    if (alpha == 0)
         return;
+    pixel = alpha >= 255 ? static_cast<std::uint32_t>(color) : blend(pixel, static_cast<std::uint32_t>(color), alpha);
+}
+
+void fill_span(const PixelRow &row, int begin, int end, Color color, unsigned alpha) noexcept
+{
     if (alpha >= 255)
-    {
-        put_pixel_unchecked(pixels, x, y, color);
+        for (int x = begin; x < end; ++x)
+            row[static_cast<unsigned>(x)] = static_cast<std::uint32_t>(color);
+    else if (alpha > 0)
+        for (int x = begin; x < end; ++x)
+        {
+            auto &pixel = row[static_cast<unsigned>(x)];
+            pixel = blend(pixel, static_cast<std::uint32_t>(color), alpha);
+        }
+}
+
+void fill_rect(std::uint32_t *pixels, const Clip &clip, int x, int y, int width, int height, Color color,
+               unsigned alpha = 255) noexcept
+{
+    const int left = std::max(x, clip.left), right = std::min(x + width, clip.right);
+    const int top = std::max(y, clip.top), bottom = std::min(y + height, clip.bottom);
+    if (left >= right)
         return;
-    }
-    auto *bytes = reinterpret_cast<std::uint8_t *>(pixels);
-    auto &pixel = *reinterpret_cast<std::uint32_t *>(
-        bytes + (linear_canvas ? std::size_t(y * frame_width + x) * 4 : tiled_byte_offset(x, y)));
-    std::uint32_t blended = 0xff000000;
-    for (unsigned shift : {0U, 8U, 16U})
+    for (int row = top; row < bottom; ++row)
+        fill_span(PixelRow(pixels, static_cast<unsigned>(row)), left, right, color, alpha);
+}
+
+bool inside(const Clip &clip, int x, int y) noexcept
+{
+    return x >= clip.left && x < clip.right && y >= clip.top && y < clip.bottom;
+}
+
+struct Interior
+{
+    int begin = 0, end = 0;
+    bool solid = false;
+};
+
+template <typename Distance, typename Inside>
+void fill_shape(std::uint32_t *pixels, const Clip &clip, float left, float top, float right, float bottom,
+                Color color, unsigned alpha, Distance distance, Inside interior_of) noexcept
+{
+    const int x0 = std::max(clip.left, static_cast<int>(std::floor(left)) - 1);
+    const int y0 = std::max(clip.top, static_cast<int>(std::floor(top)) - 1);
+    const int x1 = std::min(clip.right, static_cast<int>(std::ceil(right)) + 1);
+    const int y1 = std::min(clip.bottom, static_cast<int>(std::ceil(bottom)) + 1);
+    if (x0 >= x1 || alpha == 0)
+        return;
+    for (int y = y0; y < y1; ++y)
     {
-        const unsigned foreground = (static_cast<std::uint32_t>(color) >> shift) & 255U;
-        const unsigned background = (pixel >> shift) & 255U;
-        blended |= ((foreground * alpha + background * (255 - alpha) + 127) / 255) << shift;
+        const PixelRow row(pixels, static_cast<unsigned>(y));
+        const float py = y + 0.5f;
+        const Interior interior = interior_of(py);
+        const int begin = std::clamp(interior.begin, x0, x1);
+        const int end = std::clamp(interior.end, begin, x1);
+        const auto edge = [&](int from, int to) {
+            for (int x = from; x < to; ++x)
+            {
+                const float d = distance(x + 0.5f, py);
+                if (d >= 0.5f)
+                    continue;
+                const float coverage = d <= -0.5f ? 1.0f : 0.5f - d;
+                blend_into(row[static_cast<unsigned>(x)], color,
+                           static_cast<unsigned>(coverage * static_cast<float>(alpha) + 0.5f));
+            }
+        };
+        edge(x0, begin);
+        if (interior.solid)
+            fill_span(row, begin, end, color, alpha);
+        edge(end, x1);
     }
-    pixel = blended;
 }
 
 template <typename Distance>
-void fill_shape(std::uint32_t *pixels, float left, float top, float right, float bottom,
+void fill_shape(std::uint32_t *pixels, const Clip &clip, float left, float top, float right, float bottom,
                 Color color, unsigned alpha, Distance distance) noexcept
 {
-    const int x0 = std::max(0, static_cast<int>(std::floor(left)) - 1);
-    const int y0 = std::max(0, static_cast<int>(std::floor(top)) - 1);
-    const int x1 = std::min(static_cast<int>(frame_width), static_cast<int>(std::ceil(right)) + 1);
-    const int y1 = std::min(static_cast<int>(frame_height), static_cast<int>(std::ceil(bottom)) + 1);
-    for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x)
-        {
-            const float d = distance(x + 0.5f, y + 0.5f);
-            if (d >= 0.5f)
-                continue;
-            const float coverage = d <= -0.5f ? 1.0f : 0.5f - d;
-            blend_pixel(pixels, static_cast<unsigned>(x), static_cast<unsigned>(y), color,
-                        static_cast<unsigned>(coverage * static_cast<float>(alpha) + 0.5f));
-        }
+    fill_shape(pixels, clip, left, top, right, bottom, color, alpha, distance, [](float) { return Interior{}; });
+}
+
+Interior round_rect_interior(float py, float x, float y, float w, float h, float r, float inset,
+                             bool solid) noexcept
+{
+    r = std::min({r, w / 2, h / 2});
+    const float qy = std::abs(py - (y + h / 2)) - (h / 2 - r);
+    const float reach = r - inset;
+    if (qy > reach)
+        return {};
+    const float half = w / 2 - r + (qy > 0 ? std::sqrt(reach * reach - qy * qy) : reach);
+    const float cx = x + w / 2;
+    return {static_cast<int>(std::ceil(cx - half - 0.5f)), static_cast<int>(std::floor(cx + half - 0.5f)) + 1, solid};
 }
 
 float round_rect_distance(float px, float py, float x, float y, float w, float h, float r) noexcept
@@ -375,7 +464,8 @@ float round_rect_distance(float px, float py, float x, float y, float w, float h
     r = std::min({r, w / 2, h / 2});
     const float qx = std::abs(px - (x + w / 2)) - (w / 2 - r);
     const float qy = std::abs(py - (y + h / 2)) - (h / 2 - r);
-    return std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f)) + std::min(std::max(qx, qy), 0.0f) - r;
+    const float ox = std::max(qx, 0.0f), oy = std::max(qy, 0.0f);
+    return std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.0f) - r;
 }
 
 float segment_distance(float px, float py, float ax, float ay, float bx, float by) noexcept
@@ -383,51 +473,41 @@ float segment_distance(float px, float py, float ax, float ay, float bx, float b
     const float dx = bx - ax, dy = by - ay;
     const float length = dx * dx + dy * dy;
     const float t = length > 0 ? std::clamp(((px - ax) * dx + (py - ay) * dy) / length, 0.0f, 1.0f) : 0.0f;
-    return std::hypot(px - ax - t * dx, py - ay - t * dy);
+    const float ex = px - ax - t * dx, ey = py - ay - t * dy;
+    return std::sqrt(ex * ex + ey * ey);
 }
 
-void fill_circle(std::uint32_t *pixels, unsigned center_x, unsigned center_y, unsigned radius,
+float length(float x, float y) noexcept
+{
+    return std::sqrt(x * x + y * y);
+}
+
+void fill_circle(std::uint32_t *pixels, const Clip &clip, int center_x, int center_y, int radius,
                  Color color) noexcept
 {
-    const int signed_radius = static_cast<int>(radius);
-    for (int y = -signed_radius; y <= signed_radius; ++y)
+    for (int y = -radius; y <= radius; ++y)
     {
-        for (int x = -signed_radius; x <= signed_radius; ++x)
-        {
-            if (x * x + y * y <= signed_radius * signed_radius)
-            {
-                const int pixel_x = static_cast<int>(center_x) + x;
-                const int pixel_y = static_cast<int>(center_y) + y;
-                if (pixel_x >= 0 && pixel_y >= 0)
-                {
-                    const auto bounded_x = static_cast<unsigned>(pixel_x);
-                    const auto bounded_y = static_cast<unsigned>(pixel_y);
-                    if (bounded_x < frame_width && bounded_y < frame_height)
-                        put_pixel_unchecked(pixels, bounded_x, bounded_y, color);
-                }
-            }
-        }
+        int half = 0;
+        while ((half + 1) * (half + 1) + y * y <= radius * radius)
+            ++half;
+        fill_rect(pixels, clip, center_x - half, center_y + y, 2 * half + 1, 1, color);
     }
 }
 
-void fill_triangle(std::uint32_t *pixels, unsigned center_x, unsigned top, unsigned half_width,
+void fill_triangle(std::uint32_t *pixels, const Clip &clip, int center_x, int top, unsigned half_width,
                    unsigned height, Color color) noexcept
 {
-    if (height == 0 || center_x >= frame_width)
-        return;
-
     for (unsigned row = 0; row < height; ++row)
     {
-        const unsigned half = row * half_width / height;
-        const unsigned left = half > center_x ? 0 : center_x - half;
-        const unsigned right = half >= frame_width - center_x ? frame_width : center_x + half + 1;
-        fill_rect(pixels, left, top + row, right - left, 1, color);
+        const int half = static_cast<int>(row * half_width / height);
+        fill_rect(pixels, clip, center_x - half, top + static_cast<int>(row), 2 * half + 1, 1, color);
     }
 }
 
-void draw_text(std::uint32_t *pixels, unsigned x, unsigned y, std::string_view value,
-               unsigned scale, Color color) noexcept
+void draw_text(std::uint32_t *pixels, const Clip &clip, int x, int y, std::string_view value,
+               unsigned scale, Color color, unsigned alpha) noexcept
 {
+    const int size = static_cast<int>(scale);
     for (const char character : value)
     {
         const auto rows = glyph_rows(character);
@@ -436,11 +516,12 @@ void draw_text(std::uint32_t *pixels, unsigned x, unsigned y, std::string_view v
             for (unsigned column = 0; column < 5; ++column)
             {
                 if ((rows[row] & (1U << (4 - column))) != 0)
-                    fill_rect(pixels, x + column * scale, y + row * scale, scale, scale, color);
+                    fill_rect(pixels, clip, x + static_cast<int>(column) * size, y + static_cast<int>(row) * size,
+                              size, size, color, alpha);
             }
         }
-        x += 6 * scale;
-        if (x >= frame_width)
+        x += 6 * size;
+        if (x >= clip.right)
             return;
     }
 }
@@ -456,33 +537,62 @@ void flush_range(void *address, std::size_t length) noexcept
 }
 } // namespace
 
+int Canvas::shiftX() const noexcept {return static_cast<int>(std::lround(offsetX_));}
+int Canvas::shiftY() const noexcept {return static_cast<int>(std::lround(offsetY_));}
+unsigned Canvas::faded(unsigned alpha) const noexcept
+{
+    return opacity_ >= 255 ? std::min(alpha, 255U) : scale_alpha(std::min(alpha, 255U), opacity_);
+}
+
+void Canvas::setClip(float x, float y, float width, float height) noexcept
+{
+    clip_.left = std::max(clip_.left, static_cast<int>(std::floor(x + offsetX_)));
+    clip_.top = std::max(clip_.top, static_cast<int>(std::floor(y + offsetY_)));
+    clip_.right = std::min(clip_.right, static_cast<int>(std::ceil(x + offsetX_ + width)));
+    clip_.bottom = std::min(clip_.bottom, static_cast<int>(std::ceil(y + offsetY_ + height)));
+}
+
+void Canvas::resetClip() noexcept {clip_ = Clip{};}
+
 void Canvas::image(unsigned x,unsigned y,unsigned width,unsigned height,const std::uint32_t* data) noexcept
 {
-    if(!data||x>=frame_width||y>=frame_height||width>frame_width-x||height>frame_height-y)return;
-    for(unsigned row=0;row<height;++row)for(unsigned col=0;col<width;++col)
-        put_pixel_unchecked(pixels_,x+col,y+row,static_cast<Color>(data[row*width+col]));
+    if(!data)return;
+    const int left=static_cast<int>(x)+shiftX(), top=static_cast<int>(y)+shiftY();
+    const int c0=std::max(0,clip_.left-left), c1=std::min(static_cast<int>(width),clip_.right-left);
+    const unsigned alpha=faded(255);
+    for(unsigned row=0;row<height;++row) {
+        const int py=top+static_cast<int>(row);
+        if(py<clip_.top||py>=clip_.bottom)continue;
+        const PixelRow target(pixels_,static_cast<unsigned>(py));
+        const std::uint32_t* source=data+std::size_t(row)*width;
+        for(int col=c0;col<c1;++col)blend_into(target[static_cast<unsigned>(left+col)],static_cast<Color>(source[col]),alpha);
+    }
 }
 
 void Canvas::clear(Color color) noexcept
 {
-    fill_rect(pixels_, 0, 0, frame_width, frame_height, color);
+    fill_rect(pixels_, clip_, 0, 0, frame_width, frame_height, color, faded(255));
 }
 
 void Canvas::rectangle(unsigned x, unsigned y, unsigned width, unsigned height,
                        Color color) noexcept
 {
-    fill_rect(pixels_, x, y, width, height, color);
+    fill_rect(pixels_, clip_, static_cast<int>(x) + shiftX(), static_cast<int>(y) + shiftY(),
+              static_cast<int>(std::min(width, frame_width)), static_cast<int>(std::min(height, frame_height)), color,
+              faded(255));
 }
 
 void Canvas::circle(unsigned center_x, unsigned center_y, unsigned radius, Color color) noexcept
 {
-    fill_circle(pixels_, center_x, center_y, radius, color);
+    fill_circle(pixels_, clip_, static_cast<int>(center_x) + shiftX(), static_cast<int>(center_y) + shiftY(),
+                static_cast<int>(std::min(radius, frame_width)), color);
 }
 
 void Canvas::triangle(unsigned center_x, unsigned top, unsigned half_width, unsigned height,
                       Color color) noexcept
 {
-    fill_triangle(pixels_, center_x, top, half_width, height, color);
+    fill_triangle(pixels_, clip_, static_cast<int>(center_x) + shiftX(), static_cast<int>(top) + shiftY(),
+                  half_width, std::min(height, frame_height), color);
 }
 
 void Canvas::button(unsigned x, unsigned y, Button button, unsigned size, Color color) noexcept
@@ -495,10 +605,15 @@ void Canvas::button(unsigned x, unsigned y, Button button, unsigned size, Color 
                                   (dx * dx + dy * dy), 0.0f, 1.0f);
         return std::hypot(px - ax - t * dx, py - ay - t * dy);
     };
-    for (unsigned row = 0; row < size && y + row < frame_height; ++row)
+    const int left = static_cast<int>(x) + shiftX(), top = static_cast<int>(y) + shiftY();
+    const unsigned alpha = faded(255);
+    for (unsigned row = 0; row < size; ++row)
     {
-        for (unsigned column = 0; column < size && x + column < frame_width; ++column)
+        for (unsigned column = 0; column < size; ++column)
         {
+            const int px_screen = left + static_cast<int>(column), py_screen = top + static_cast<int>(row);
+            if (!inside(clip_, px_screen, py_screen))
+                continue;
             unsigned coverage = 0;
             for (unsigned sy = 0; sy < 4; ++sy)
             for (unsigned sx = 0; sx < 4; ++sx)
@@ -559,32 +674,23 @@ void Canvas::button(unsigned x, unsigned y, Button button, unsigned size, Color 
                 coverage += ink;
             }
             if (!coverage) continue;
-            const auto offset = linear_canvas ? std::size_t((y+row)*frame_width+x+column)*4 :
-                                                tiled_byte_offset(x+column, y+row);
-            const auto base = *reinterpret_cast<const std::uint32_t *>(
-                reinterpret_cast<const std::uint8_t *>(pixels_) + offset);
-            std::uint32_t blended = 0xff000000;
-            for (unsigned shift : {0U, 8U, 16U})
-            {
-                const unsigned foreground = (static_cast<std::uint32_t>(color) >> shift) & 255U;
-                const unsigned background = (base >> shift) & 255U;
-                blended |= ((foreground * coverage + background * (16-coverage) + 8) / 16) << shift;
-            }
-            put_pixel_unchecked(pixels_, x+column, y+row, static_cast<Color>(blended));
+            blend_into(PixelRow(pixels_, static_cast<unsigned>(py_screen))[static_cast<unsigned>(px_screen)], color,
+                       (coverage * alpha + 8) / 16);
         }
     }
     if (button == Button::l1 || button == Button::r1)
     {
         const unsigned scale = size / 20;
-        draw_text(pixels_, x + (size - 11*scale)/2, y + (size - 7*scale)/2,
-                  button == Button::l1 ? "L1" : "R1", scale, color);
+        draw_text(pixels_, clip_, left + static_cast<int>(size - 11*scale)/2, top + static_cast<int>(size - 7*scale)/2,
+                  button == Button::l1 ? "L1" : "R1", scale, color, alpha);
     }
 }
 
 void Canvas::text(unsigned x, unsigned y, std::string_view value, unsigned scale,
                   Color color) noexcept
 {
-    draw_text(pixels_, x, y, value, scale, color);
+    draw_text(pixels_, clip_, static_cast<int>(x) + shiftX(), static_cast<int>(y) + shiftY(), value, scale, color,
+              faded(255));
 }
 
 void Canvas::coverage(int x, int y, unsigned width, unsigned height, const std::uint8_t *mask,
@@ -592,20 +698,21 @@ void Canvas::coverage(int x, int y, unsigned width, unsigned height, const std::
 {
     if (!mask)
         return;
+    x += shiftX();
+    y += shiftY();
+    alpha = faded(alpha);
+    const int c0 = std::max(0, clip_.left - x);
+    const int c1 = std::min(static_cast<int>(width), clip_.right - x);
     for (unsigned row = 0; row < height; ++row)
     {
         const int py = y + static_cast<int>(row);
-        if (py < 0 || py >= static_cast<int>(frame_height))
+        if (py < clip_.top || py >= clip_.bottom)
             continue;
-        for (unsigned column = 0; column < width; ++column)
-        {
-            const int px = x + static_cast<int>(column);
-            const unsigned value = mask[row * stride + column];
-            if (px < 0 || value == 0)
-                continue;
-            blend_pixel(pixels_, static_cast<unsigned>(px), static_cast<unsigned>(py), color,
-                        (value * alpha + 127) / 255);
-        }
+        const PixelRow target(pixels_, static_cast<unsigned>(py));
+        const std::uint8_t *values = mask + std::size_t(row) * stride;
+        for (int column = c0; column < c1; ++column)
+            if (const unsigned value = values[column])
+                blend_into(target[static_cast<unsigned>(x + column)], color, scale_alpha(value, alpha));
     }
 }
 
@@ -614,48 +721,40 @@ void Canvas::roundRect(float x, float y, float w, float h, float radius, Color c
 {
     if (w <= 0 || h <= 0)
         return;
-    const float inner = std::min({radius, w / 2, h / 2});
-    if (alpha >= 255 && w > 2 * inner + 2 && h > 2)
-    {
-        const float sx = std::ceil(x + inner), ex = std::floor(x + w - inner);
-        const float sy = std::ceil(y), ey = std::floor(y + h);
-        if (ex > sx && ey > sy)
-            fill_rect(pixels_, static_cast<unsigned>(std::max(sx, 0.0f)), static_cast<unsigned>(std::max(sy, 0.0f)),
-                      static_cast<unsigned>(ex - std::max(sx, 0.0f)), static_cast<unsigned>(ey - std::max(sy, 0.0f)), color);
-        const auto rim = [&](float left, float right) {
-            fill_shape(pixels_, left, y, right, y + h, color, alpha, [&](float px, float py) {
-                return round_rect_distance(px, py, x, y, w, h, radius);
-            });
-        };
-        rim(x, sx);
-        rim(ex, x + w);
-        fill_shape(pixels_, sx, y, ex, sy + 1, color, alpha, [&](float px, float py) {
-            return round_rect_distance(px, py, x, y, w, h, radius);
-        });
-        fill_shape(pixels_, sx, ey - 1, ex, y + h, color, alpha, [&](float px, float py) {
-            return round_rect_distance(px, py, x, y, w, h, radius);
-        });
-        return;
-    }
-    fill_shape(pixels_, x, y, x + w, y + h, color, alpha, [&](float px, float py) {
-        return round_rect_distance(px, py, x, y, w, h, radius);
-    });
+    x += offsetX_;
+    y += offsetY_;
+    fill_shape(
+        pixels_, clip_, x, y, x + w, y + h, color, faded(alpha),
+        [&](float px, float py) { return round_rect_distance(px, py, x, y, w, h, radius); },
+        [&](float py) { return round_rect_interior(py, x, y, w, h, radius, 0.5f, true); });
 }
 
 void Canvas::roundRectStroke(float x, float y, float w, float h, float radius, float thickness,
                              Color color, unsigned alpha) noexcept
 {
-    fill_shape(pixels_, x, y, x + w, y + h, color, alpha, [&](float px, float py) {
-        return std::abs(round_rect_distance(px, py, x + thickness / 2, y + thickness / 2, w - thickness,
-                                            h - thickness, radius - thickness / 2)) - thickness / 2;
-    });
+    x += offsetX_;
+    y += offsetY_;
+    const float half = thickness / 2;
+    fill_shape(
+        pixels_, clip_, x, y, x + w, y + h, color, faded(alpha),
+        [&](float px, float py) {
+            return std::abs(round_rect_distance(px, py, x + half, y + half, w - thickness, h - thickness,
+                                                radius - half)) - half;
+        },
+        [&](float py) {
+            return round_rect_interior(py, x + half, y + half, w - thickness, h - thickness, radius - half,
+                                       half + 0.5f, false);
+        });
 }
 
 void Canvas::verticalGradient(float x, float y, float w, float h, float radius, Color top,
                               Color bottom) noexcept
 {
-    const int y0 = std::max(0, static_cast<int>(std::floor(y)));
-    const int y1 = std::min(static_cast<int>(frame_height), static_cast<int>(std::ceil(y + h)));
+    x += offsetX_;
+    y += offsetY_;
+    const unsigned alpha = faded(255);
+    const int y0 = std::max(clip_.top, static_cast<int>(std::floor(y)));
+    const int y1 = std::min(clip_.bottom, static_cast<int>(std::ceil(y + h)));
     for (int row = y0; row < y1; ++row)
     {
         const float t = std::clamp((row + 0.5f - y) / h, 0.0f, 1.0f);
@@ -666,18 +765,19 @@ void Canvas::verticalGradient(float x, float y, float w, float h, float radius, 
             const float b = static_cast<float>((static_cast<std::uint32_t>(bottom) >> shift) & 255U);
             mixed |= static_cast<std::uint32_t>(a + (b - a) * t + 0.5f) << shift;
         }
-        const int x0 = std::max(0, static_cast<int>(std::floor(x)));
-        const int x1 = std::min(static_cast<int>(frame_width), static_cast<int>(std::ceil(x + w)));
+        const int x0 = std::max(clip_.left, static_cast<int>(std::floor(x)));
+        const int x1 = std::min(clip_.right, static_cast<int>(std::ceil(x + w)));
         const float py = row + 0.5f;
         const bool corner = py < y + radius || py > y + h - radius;
+        const PixelRow target(pixels_, static_cast<unsigned>(row));
         for (int column = x0; column < x1; ++column)
         {
             const float px = column + 0.5f;
             const float d = corner || px < x + 1 || px > x + w - 1 ? round_rect_distance(px, py, x, y, w, h, radius) : -1.0f;
             if (d >= 0.5f)
                 continue;
-            blend_pixel(pixels_, static_cast<unsigned>(column), static_cast<unsigned>(row),
-                        static_cast<Color>(mixed), d <= -0.5f ? 255U : static_cast<unsigned>((0.5f - d) * 255.0f + 0.5f));
+            blend_into(target[static_cast<unsigned>(column)], static_cast<Color>(mixed),
+                       d <= -0.5f ? alpha : static_cast<unsigned>((0.5f - d) * static_cast<float>(alpha) + 0.5f));
         }
     }
 }
@@ -685,46 +785,95 @@ void Canvas::verticalGradient(float x, float y, float w, float h, float radius, 
 void Canvas::line(float x0, float y0, float x1, float y1, float thickness, Color color,
                   unsigned alpha) noexcept
 {
+    x0 += offsetX_;
+    x1 += offsetX_;
+    y0 += offsetY_;
+    y1 += offsetY_;
     const float pad = thickness / 2;
-    fill_shape(pixels_, std::min(x0, x1) - pad, std::min(y0, y1) - pad, std::max(x0, x1) + pad,
-               std::max(y0, y1) + pad, color, alpha, [&](float px, float py) {
+    fill_shape(pixels_, clip_, std::min(x0, x1) - pad, std::min(y0, y1) - pad, std::max(x0, x1) + pad,
+               std::max(y0, y1) + pad, color, faded(alpha), [&](float px, float py) {
                    return segment_distance(px, py, x0, y0, x1, y1) - pad;
                });
 }
 
 void Canvas::ring(float cx, float cy, float radius, float thickness, Color color, unsigned alpha) noexcept
 {
+    cx += offsetX_;
+    cy += offsetY_;
     const float outer = radius + thickness / 2;
-    fill_shape(pixels_, cx - outer, cy - outer, cx + outer, cy + outer, color, alpha,
-               [&](float px, float py) {
-                   return std::abs(std::hypot(px - cx, py - cy) - radius) - thickness / 2;
-               });
+    fill_shape(
+        pixels_, clip_, cx - outer, cy - outer, cx + outer, cy + outer, color, faded(alpha),
+        [&](float px, float py) { return std::abs(length(px - cx, py - cy) - radius) - thickness / 2; },
+        [&](float py) {
+            return round_rect_interior(py, cx - radius, cy - radius, 2 * radius, 2 * radius, radius,
+                                       thickness / 2 + 0.5f, false);
+        });
+}
+
+void Canvas::arc(float cx, float cy, float radius, float thickness, float start, float sweep, Color color,
+                 unsigned alpha) noexcept
+{
+    if (sweep <= 0)
+        return;
+    if (sweep >= 6.2831853f)
+    {
+        ring(cx, cy, radius, thickness, color, alpha);
+        return;
+    }
+    cx += offsetX_;
+    cy += offsetY_;
+    const float half = thickness / 2, outer = radius + half;
+    const float ax = cx + std::cos(start) * radius, ay = cy + std::sin(start) * radius;
+    const float bx = cx + std::cos(start + sweep) * radius, by = cy + std::sin(start + sweep) * radius;
+    fill_shape(
+        pixels_, clip_, cx - outer, cy - outer, cx + outer, cy + outer, color, faded(alpha),
+        [&](float px, float py) {
+            float angle = std::atan2(py - cy, px - cx) - start;
+            angle -= 6.2831853f * std::floor(angle / 6.2831853f);
+            if (angle <= sweep)
+                return std::abs(length(px - cx, py - cy) - radius) - half;
+            return std::min(length(px - ax, py - ay), length(px - bx, py - by)) - half;
+        },
+        [&](float py) {
+            return round_rect_interior(py, cx - radius, cy - radius, 2 * radius, 2 * radius, radius, half + 0.5f,
+                                       false);
+        });
 }
 
 void Canvas::disc(float cx, float cy, float radius, Color color, unsigned alpha) noexcept
 {
-    fill_shape(pixels_, cx - radius, cy - radius, cx + radius, cy + radius, color, alpha,
-               [&](float px, float py) { return std::hypot(px - cx, py - cy) - radius; });
+    cx += offsetX_;
+    cy += offsetY_;
+    fill_shape(
+        pixels_, clip_, cx - radius, cy - radius, cx + radius, cy + radius, color, faded(alpha),
+        [&](float px, float py) { return length(px - cx, py - cy) - radius; },
+        [&](float py) {
+            return round_rect_interior(py, cx - radius, cy - radius, 2 * radius, 2 * radius, radius, 0.5f, true);
+        });
 }
 
 void Canvas::imageRounded(int x, int y, unsigned width, unsigned height,
                           const std::uint32_t *data, float radius, unsigned alpha) noexcept
 {
-    if (!data)
+    alpha = faded(alpha);
+    if (!data || alpha == 0)
         return;
+    x += shiftX();
+    y += shiftY();
     const float w = static_cast<float>(width), h = static_cast<float>(height);
+    const int c0 = std::max(0, clip_.left - x);
+    const int c1 = std::min(static_cast<int>(width), clip_.right - x);
     for (unsigned row = 0; row < height; ++row)
     {
         const int py = y + static_cast<int>(row);
-        if (py < 0 || py >= static_cast<int>(frame_height))
+        if (py < clip_.top || py >= clip_.bottom)
             continue;
+        const PixelRow target(pixels_, static_cast<unsigned>(py));
+        const std::uint32_t *source = data + std::size_t(row) * width;
         const float cy = static_cast<float>(row) + 0.5f;
         const bool corner = cy < radius || cy > h - radius;
-        for (unsigned column = 0; column < width; ++column)
+        for (int column = c0; column < c1; ++column)
         {
-            const int px = x + static_cast<int>(column);
-            if (px < 0 || px >= static_cast<int>(frame_width))
-                continue;
             const float cx = static_cast<float>(column) + 0.5f;
             unsigned coverage = alpha;
             if (corner && (cx < radius || cx > w - radius))
@@ -735,35 +884,118 @@ void Canvas::imageRounded(int x, int y, unsigned width, unsigned height,
                 if (d > -0.5f)
                     coverage = static_cast<unsigned>((0.5f - d) * static_cast<float>(alpha) + 0.5f);
             }
-            blend_pixel(pixels_, static_cast<unsigned>(px), static_cast<unsigned>(py),
-                        static_cast<Color>(data[std::size_t(row) * width + column]), coverage);
+            blend_into(target[static_cast<unsigned>(x + column)], static_cast<Color>(source[column]), coverage);
         }
     }
 }
 
-void Canvas::imageFaded(int x, int y, unsigned width, unsigned height, const std::uint32_t *data,
-                        unsigned sourceWidth, unsigned sourceHeight,
-                        const std::uint8_t *columnAlpha, const std::uint8_t *rowAlpha) noexcept
+void Canvas::imageScaled(float x, float y, float w, float h, const std::uint32_t *data, unsigned sourceWidth,
+                         unsigned sourceHeight, float radius, unsigned alpha) noexcept
 {
-    if (!data || !columnAlpha || !rowAlpha || !width || !height || !sourceWidth || !sourceHeight)
+    alpha = faded(alpha);
+    if (!data || alpha == 0 || w < 1 || h < 1 || sourceWidth < 2 || sourceHeight < 2)
         return;
-    for (unsigned row = 0; row < height; ++row)
+    x += offsetX_;
+    y += offsetY_;
+    const int x0 = std::max(clip_.left, static_cast<int>(std::floor(x)));
+    const int y0 = std::max(clip_.top, static_cast<int>(std::floor(y)));
+    const int x1 = std::min(clip_.right, static_cast<int>(std::ceil(x + w)));
+    const int y1 = std::min(clip_.bottom, static_cast<int>(std::ceil(y + h)));
+    const float sx = static_cast<float>(sourceWidth) / w, sy = static_cast<float>(sourceHeight) / h;
+    const float maxU = static_cast<float>(sourceWidth - 1), maxV = static_cast<float>(sourceHeight - 1);
+    for (int row = y0; row < y1; ++row)
     {
-        const int py = y + static_cast<int>(row);
-        if (py < 0 || py >= static_cast<int>(frame_height) || !rowAlpha[row])
-            continue;
-        const std::size_t sourceRow = std::size_t(row) * sourceHeight / height;
-        for (unsigned column = 0; column < width; ++column)
+        const PixelRow target(pixels_, static_cast<unsigned>(row));
+        const float py = row + 0.5f;
+        const float v = std::clamp((py - y) * sy - 0.5f, 0.0f, maxV);
+        const unsigned v0 = static_cast<unsigned>(v), v1 = std::min(v0 + 1, sourceHeight - 1);
+        const unsigned fy = static_cast<unsigned>((v - static_cast<float>(v0)) * 256);
+        const std::uint32_t *top = data + std::size_t(v0) * sourceWidth;
+        const std::uint32_t *bottom = data + std::size_t(v1) * sourceWidth;
+        const bool corner = py < y + radius || py > y + h - radius;
+        for (int column = x0; column < x1; ++column)
         {
-            const int px = x + static_cast<int>(column);
-            if (px < 0 || px >= static_cast<int>(frame_width))
+            const float px = column + 0.5f;
+            const float d = corner || px < x + radius || px > x + w - radius
+                                ? round_rect_distance(px, py, x, y, w, h, radius)
+                                : std::max({x - px, px - x - w, y - py, py - y - h});
+            if (d >= 0.5f)
                 continue;
-            const unsigned alpha = (unsigned(columnAlpha[column]) * rowAlpha[row] + 127) / 255;
-            if (!alpha)
+            const unsigned coverage =
+                d <= -0.5f ? alpha : static_cast<unsigned>((0.5f - d) * static_cast<float>(alpha) + 0.5f);
+            const float u = std::clamp((px - x) * sx - 0.5f, 0.0f, maxU);
+            const unsigned u0 = static_cast<unsigned>(u), u1 = std::min(u0 + 1, sourceWidth - 1);
+            const unsigned fx = static_cast<unsigned>((u - static_cast<float>(u0)) * 256);
+            std::uint32_t mixed = 0xff000000U;
+            for (unsigned shift : {0U, 8U, 16U})
+            {
+                const auto channel = [&](std::uint32_t pixel) { return (pixel >> shift) & 255U; };
+                const unsigned upper = channel(top[u0]) * (256 - fx) + channel(top[u1]) * fx;
+                const unsigned lower = channel(bottom[u0]) * (256 - fx) + channel(bottom[u1]) * fx;
+                mixed |= ((upper * (256 - fy) + lower * fy + 32768U) >> 16) << shift;
+            }
+            blend_into(target[static_cast<unsigned>(column)], static_cast<Color>(mixed), coverage);
+        }
+    }
+}
+
+void Canvas::imageDoubled(const std::uint32_t *data, unsigned sourceWidth, unsigned sourceHeight, unsigned alpha,
+                          const std::uint32_t *under) noexcept
+{
+    alpha = under ? std::min(alpha, 255U) : faded(alpha);
+    if (!data || (alpha == 0 && !under))
+        return;
+    const int x = shiftX(), y = shiftY();
+    const int x0 = std::max(clip_.left, x), x1 = std::min(clip_.right, x + 2 * static_cast<int>(sourceWidth));
+    const int y0 = std::max(clip_.top, y), y1 = std::min(clip_.bottom, y + 2 * static_cast<int>(sourceHeight));
+    for (int row = y0; row < y1; ++row)
+    {
+        const PixelRow target(pixels_, static_cast<unsigned>(row));
+        const std::size_t offset = std::size_t((row - y) / 2) * sourceWidth;
+        const std::uint32_t *source = data + offset;
+        const std::uint32_t *below = under ? under + offset : nullptr;
+        for (int column = x0; column < x1;)
+        {
+            const int sourceX = (column - x) / 2;
+            const bool pair = ((column - x) & 1) == 0 && column + 1 < x1;
+            auto &first = target[static_cast<unsigned>(column)];
+            const std::uint32_t value = below ? blend(below[sourceX], source[sourceX], alpha)
+                                        : alpha >= 255 ? source[sourceX]
+                                                       : blend(first, source[sourceX], alpha);
+            first = value;
+            if (pair)
+                (&first)[1] = below || alpha >= 255 ? value : blend((&first)[1], source[sourceX], alpha);
+            column += pair ? 2 : 1;
+        }
+    }
+}
+
+void Canvas::scrim(float x, float y, float w, float h, float radius, float from, Color color, unsigned alpha) noexcept
+{
+    x += offsetX_;
+    y += offsetY_;
+    alpha = faded(alpha);
+    const float top = y + h * from, span = h * (1 - from);
+    const int y0 = std::max(clip_.top, static_cast<int>(std::floor(top)));
+    const int y1 = std::min(clip_.bottom, static_cast<int>(std::ceil(y + h)));
+    const int x0 = std::max(clip_.left, static_cast<int>(std::floor(x)));
+    const int x1 = std::min(clip_.right, static_cast<int>(std::ceil(x + w)));
+    for (int row = y0; row < y1; ++row)
+    {
+        const float py = row + 0.5f;
+        const unsigned shade = static_cast<unsigned>(std::clamp((py - top) / span, 0.0f, 1.0f) * static_cast<float>(alpha) + 0.5f);
+        if (!shade)
+            continue;
+        const PixelRow target(pixels_, static_cast<unsigned>(row));
+        const bool corner = py > y + h - radius;
+        for (int column = x0; column < x1; ++column)
+        {
+            const float px = column + 0.5f;
+            const float d = corner || px < x + 1 || px > x + w - 1 ? round_rect_distance(px, py, x, y, w, h, radius) : -1.0f;
+            if (d >= 0.5f)
                 continue;
-            const std::size_t sourceColumn = std::size_t(column) * sourceWidth / width;
-            blend_pixel(pixels_, static_cast<unsigned>(px), static_cast<unsigned>(py),
-                        static_cast<Color>(data[sourceRow * sourceWidth + sourceColumn]), alpha);
+            blend_into(target[static_cast<unsigned>(column)], color,
+                       d <= -0.5f ? shade : static_cast<unsigned>((0.5f - d) * static_cast<float>(shade) + 0.5f));
         }
     }
 }
@@ -772,6 +1004,7 @@ void Canvas::polygon(const float *points, unsigned count, Color color, unsigned 
 {
     if (!points || count < 3)
         return;
+    const float ox = offsetX_, oy = offsetY_;
     float left = points[0], right = points[0], top = points[1], bottom = points[1];
     for (unsigned i = 1; i < count; ++i)
     {
@@ -780,19 +1013,22 @@ void Canvas::polygon(const float *points, unsigned count, Color color, unsigned 
         top = std::min(top, points[i * 2 + 1]);
         bottom = std::max(bottom, points[i * 2 + 1]);
     }
-    fill_shape(pixels_, left, top, right, bottom, color, alpha, [&](float px, float py) {
-        float nearest = 1e9f;
-        bool inside = false;
-        for (unsigned i = 0, j = count - 1; i < count; j = i++)
-        {
-            const float ax = points[j * 2], ay = points[j * 2 + 1];
-            const float bx = points[i * 2], by = points[i * 2 + 1];
-            nearest = std::min(nearest, segment_distance(px, py, ax, ay, bx, by));
-            if ((by > py) != (ay > py) && px < (ax - bx) * (py - by) / (ay - by) + bx)
-                inside = !inside;
-        }
-        return inside ? -nearest : nearest;
-    });
+    fill_shape(pixels_, clip_, left + ox, top + oy, right + ox, bottom + oy, color, faded(alpha),
+               [&](float px, float py) {
+                   px -= ox;
+                   py -= oy;
+                   float nearest = 1e9f;
+                   bool inside = false;
+                   for (unsigned i = 0, j = count - 1; i < count; j = i++)
+                   {
+                       const float ax = points[j * 2], ay = points[j * 2 + 1];
+                       const float bx = points[i * 2], by = points[i * 2 + 1];
+                       nearest = std::min(nearest, segment_distance(px, py, ax, ay, bx, by));
+                       if ((by > py) != (ay > py) && px < (ax - bx) * (py - by) / (ay - by) + bx)
+                           inside = !inside;
+                   }
+                   return inside ? -nearest : nearest;
+               });
 }
 
 void read_asset_text(const char *path, std::span<char> destination,
@@ -815,21 +1051,68 @@ void read_asset_text(const char *path, std::span<char> destination,
 
 void requestStop() noexcept {stopRequested.store(true);}
 
+#ifdef OPENNOW_HOST_PREVIEW
+namespace {
+void writePpm(const std::uint32_t* pixels,const char* path) noexcept
+{
+    auto* file=std::fopen(path,"wb");
+    if (!file) std::exit(1);
+    std::fprintf(file,"P6\n%u %u\n255\n",frame_width,frame_height);
+    static unsigned char row[frame_width*3];
+    for (unsigned y=0;y<frame_height;++y) {
+        const PixelRow source(const_cast<std::uint32_t*>(pixels),y);
+        for (unsigned x=0;x<frame_width;++x) {
+            const auto pixel=source[x];
+            row[x*3]=static_cast<unsigned char>(pixel);row[x*3+1]=static_cast<unsigned char>(pixel>>8);row[x*3+2]=static_cast<unsigned char>(pixel>>16);
+        }
+        std::fwrite(row,1,sizeof(row),file);
+    }
+    std::fclose(file);
+}
+}
+
+void runFrames(DrawScene draw, unsigned count, PreviewStep step, const char *directory, const char *finalPath,
+               bool report) noexcept
+{
+    auto* pixels=static_cast<std::uint32_t*>(std::calloc(frame_bytes,1));
+    auto* times=static_cast<double*>(std::calloc(count?count:1,sizeof(double)));
+    if (!pixels||!times) std::exit(1);
+    Canvas canvas(pixels);
+    unsigned drawn=0;
+    for (unsigned frame=0;frame<count;++frame) {
+        step(frame);
+        timespec begin{},end{};
+        clock_gettime(CLOCK_MONOTONIC,&begin);
+        const bool changed=draw(canvas);
+        clock_gettime(CLOCK_MONOTONIC,&end);
+        if (changed) times[drawn++]=double(end.tv_sec-begin.tv_sec)*1e3+double(end.tv_nsec-begin.tv_nsec)/1e6;
+        if (directory) {
+            char path[512];
+            std::snprintf(path,sizeof(path),"%s/frame-%04u.ppm",directory,frame);
+            writePpm(pixels,path);
+        }
+    }
+    if (finalPath) writePpm(pixels,finalPath);
+    if (!report) {std::free(times); std::free(pixels); return;}
+    std::sort(times,times+drawn);
+    double total=0;
+    for (unsigned i=0;i<drawn;++i) total+=times[i];
+    if (drawn) std::printf("frames=%u drawn=%u mean=%.3fms p50=%.3fms p95=%.3fms max=%.3fms\n",count,drawn,total/drawn,
+                           times[drawn/2],times[std::min(drawn-1,drawn*95/100)],times[drawn-1]);
+    else std::printf("frames=%u drawn=0\n",count);
+    std::free(times); std::free(pixels);
+}
+#endif
+
 void run(DrawScene draw, std::string_view ready_message) noexcept
 {
 #ifdef OPENNOW_HOST_PREVIEW
+    (void)ready_message;
     auto* pixels=static_cast<std::uint32_t*>(std::calloc(frame_bytes,1));
     if (!pixels) std::exit(1);
     Canvas canvas(pixels); draw(canvas);
-    auto* file=std::fopen("build/preview.ppm","wb");
-    if (!file) std::exit(1);
-    std::fprintf(file,"P6\n%u %u\n255\n",frame_width,frame_height);
-    for (unsigned i=0;i<frame_width*frame_height;++i) {
-        const auto pixel=pixels[tiled_byte_offset(i%frame_width,i/frame_width)/4];
-        const unsigned char rgb[]={static_cast<unsigned char>(pixel),static_cast<unsigned char>(pixel>>8),static_cast<unsigned char>(pixel>>16)};
-        std::fwrite(rgb,1,3,file);
-    }
-    std::fclose(file); std::free(pixels); std::exit(0);
+    writePpm(pixels,"build/preview.ppm");
+    std::free(pixels); std::exit(0);
 #else
 #ifdef OPENNOW_GPU
     if(opennow::gpu::available()) {

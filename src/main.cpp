@@ -46,6 +46,11 @@ int scePthreadAttrInit(void**);
 int scePthreadAttrSetstacksize(void**,std::size_t);
 int scePthreadAttrDestroy(void**);
 }
+#ifdef OPENNOW_HOST_PREVIEW
+bool previewPad=false;
+unsigned previewButtons=0;
+unsigned long long previewTimeUs=1000000;
+#endif
 namespace {
 using opennow::State;
 using opennow::CloudState;
@@ -124,6 +129,30 @@ std::atomic_bool forwardLaunchMode{false};
 
 #ifdef OPENNOW_HOST_PREVIEW
 bool previewVideo=false;
+struct PreviewPress {unsigned frame,buttons;};
+PreviewPress previewScript[512];
+unsigned previewPresses=0,previewHz=60;
+void previewStep(unsigned frame) noexcept {
+    previewTimeUs=1000000ULL+1000000ULL*frame/previewHz;
+    previewButtons=0;
+    for(unsigned i=0;i<previewPresses;++i)if(previewScript[i].frame==frame)previewButtons|=previewScript[i].buttons;
+}
+void parsePreviewScript(const char* script) noexcept {
+    const struct {const char* name;unsigned bit;} names[]={{"left",PS5_PAD_BUTTON_LEFT},{"right",PS5_PAD_BUTTON_RIGHT},
+        {"up",PS5_PAD_BUTTON_UP},{"down",PS5_PAD_BUTTON_DOWN},{"cross",PS5_PAD_BUTTON_CROSS},{"circle",PS5_PAD_BUTTON_CIRCLE},
+        {"square",PS5_PAD_BUTTON_SQUARE},{"triangle",PS5_PAD_BUTTON_TRIANGLE},{"l1",PS5_PAD_BUTTON_L1},{"r1",PS5_PAD_BUTTON_R1}};
+    for(const char* p=script;p&&*p&&previewPresses<std::size(previewScript);) {
+        char* end=nullptr;
+        const unsigned long frame=std::strtoul(p,&end,10);
+        if(end==p||*end!=':')return;
+        p=end+1;
+        const std::size_t length=std::strcspn(p," ,");
+        for(const auto& n:names)if(std::strlen(n.name)==length&&std::strncmp(n.name,p,length)==0)
+            previewScript[previewPresses++]={static_cast<unsigned>(frame),n.bit};
+        p+=length;
+        while(*p==' '||*p==',')++p;
+    }
+}
 void previewVideoFrame(Canvas& c) noexcept {
     for(unsigned y=0;y<1080;y+=4) {
         const unsigned t=y*255/1080;
@@ -848,12 +877,13 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     static opennow::ui::AudioInfo previousAudio;
     static opennow::art::DiskStats previousDisk;
     static bool first=true,previousReady=false,previousKeyboard=false;
+    static opennow::ui::Motion uiMotion;
     const unsigned artGeneration=artCache?artCache->generation():0;
     const auto disk=artCache?artCache->diskStats():opennow::art::DiskStats{};
     const bool diskShown=screen==Screen::settings&&settingsPane==SettingsPane::cache;
     const bool diskSame=!diskShown||(disk.enabled==previousDisk.enabled&&disk.available==previousDisk.available&&disk.busy==previousDisk.busy&&
                                      disk.bytes==previousDisk.bytes&&disk.count==previousDisk.count&&disk.error==previousDisk.error);
-    if(!first&&!input&&artGeneration==previousArt&&std::memcmp(&previous,&v,sizeof(v))==0&&
+    if(!first&&!input&&!uiMotion.animating()&&artGeneration==previousArt&&std::memcmp(&previous,&v,sizeof(v))==0&&
        std::memcmp(&previousCloud,&cv,sizeof(cv))==0&&std::memcmp(&previousLibrary,&lv,sizeof(lv))==0&&
        previousDefaults==defaults&&previousLaunch==launch&&std::memcmp(&previousSettings,&settings,sizeof(settings))==0&&previousAudio==audio&&
        previousReady==inputReady&&previousKeyboard==keyboard.open&&diskSame&&previousTile==tile.revision)
@@ -866,10 +896,11 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     const char* output="Host preview \xC2\xB7 no video output";
 #endif
     const Section shownSection=screen==Screen::detail?detailSection:section;
+    uiMotion.advance(now);
     opennow::ui::render(c,{screen,shownSection,v,cv,lv,defaults,launch,choices,choiceCount,detailChoice,
         browserFor(shownSection).focus,searchInput,shownSearch,output,streaming,settingsPane,settingsContent,settingsRow,confirmSignOut,
         settings,artCache,++artFrame,keyboard,inputReady,draft,caps,acceptSettings(draft),adjusted,numberEdit,
-        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio,detailAction,tile});
+        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio,detailAction,tile,&uiMotion});
     return true;
 }
 #ifdef OPENNOW_HOST_PREVIEW
@@ -1034,7 +1065,12 @@ int main(int argc,char** argv) {
         for(unsigned i=0;i<4;++i){cache.want(covers[i][2],opennow::art::Kind::tile,2);cache.want(covers[i][3],opennow::art::Kind::hero,2);}
         while(cache.step()){}
     }
-    ps5::demo::run(draw,"Host preview - fixture data");
+    const char* frames=std::getenv("OPENNOW_PREVIEW_FRAMES");
+    if(const char* hz=std::getenv("OPENNOW_PREVIEW_HZ"))previewHz=std::max(1UL,std::strtoul(hz,nullptr,10));
+    parsePreviewScript(std::getenv("OPENNOW_PREVIEW_INPUT"));
+    previewPad=true;
+    ps5::demo::runFrames(draw,frames?static_cast<unsigned>(std::strtoul(frames,nullptr,10)):2*previewHz,previewStep,
+                         std::getenv("OPENNOW_PREVIEW_OUT"),"build/preview.ppm",frames!=nullptr);
     return 0;
 #else
     storageError=opennow::appStorage::initialize();

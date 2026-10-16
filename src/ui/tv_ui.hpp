@@ -8,6 +8,7 @@
 #include "../input/stream_keyboard.hpp"
 #include "stream_draft.hpp"
 #include "artwork.hpp"
+#include "motion.hpp"
 
 namespace opennow::ui {
 enum class Section { library, browse, settings };
@@ -100,6 +101,7 @@ struct Model {
     AudioInfo audio;
     const char* detailAction;
     const HomeTile& tile;
+    Motion* motion=nullptr;
 };
 void render(ps5::demo::Canvas& canvas, const Model& model) noexcept;
 struct Overlay { const StreamKeyboard& keyboard; bool launcher; unsigned speed; bool inputReady; };
