@@ -18,7 +18,6 @@ const char *opennow_app_root(void);
 const char *opennow_storage_root(void);
 const char *opennow_app_file(const char *name);
 const char *opennow_storage_file(const char *name);
-int opennow_rebase_sandbox(const char *sandbox);
 #ifdef __cplusplus
 }
 

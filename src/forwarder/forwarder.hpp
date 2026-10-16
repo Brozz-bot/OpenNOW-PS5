@@ -8,7 +8,7 @@ namespace opennow::forwarder {
 inline constexpr char targetTitleId[]="PPSA99082";
 enum class Code { created, alreadyExists, removed, notFound, listed, available, unavailable,
                   invalidGame, noFreeTitleId, conflict, cancelled, artworkError, templateError,
-                  ioError, unsafeElevation, sandboxLost };
+                  ioError };
 struct Result {
     Code code=Code::ioError;
     int error=0;
@@ -19,7 +19,7 @@ struct Result {
                code==Code::notFound||code==Code::listed||code==Code::available;
     }
 };
-enum class Phase { checking, downloadingIcon, downloadingBackground, writing, publishing, complete };
+enum class Phase { checking, downloadingIcon, downloadingBackground, writing, publishing, installing, complete };
 struct Progress { Phase phase; unsigned completed; unsigned total; };
 using OnProgress=void(*)(void*,const Progress&) noexcept;
 struct Job {
@@ -32,6 +32,7 @@ struct Paths {
     const char* templateRoot=nullptr;
     const char* const* collisionRoots=nullptr;
     unsigned collisionRootCount=0;
+    const char* stageRoot=nullptr;
 };
 struct Options {
     Paths paths{};
@@ -41,10 +42,7 @@ struct Options {
 struct Entry { char titleId[10]{}; Game game{}; };
 using Visit=bool(*)(void*,const Entry&) noexcept;
 
-Result initialize() noexcept;
 bool available() noexcept;
-bool fatalStartup() noexcept;
-bool rebaseSandbox(const char* sandboxes,const char* marker) noexcept;
 const char* message(Code code) noexcept;
 Result create(const Game& game,const Options& options={},const Job& job={}) noexcept;
 Result list(Visit visit,void* context,const Paths& paths={}) noexcept;

@@ -44,9 +44,9 @@ void equalJson(const char* a,const char* b) {
     cJSON_Delete(first);cJSON_Delete(second);
 }
 struct ProgressState {
-    std::string root;
+    std::string root,stageRoot;
     std::atomic_bool cancel{false};
-    bool cancelBeforePublish=false,blockRename=false;
+    bool cancelBeforePublish=false,corruptStage=false;
     unsigned calls=0;
 };
 void progress(void* context,const Progress& value) noexcept {
@@ -55,8 +55,9 @@ void progress(void* context,const Progress& value) noexcept {
     for(const auto& path:fs::directory_iterator(state.root)) {
         if(path.path().filename().string().rfind("PPSA",0)!=0)continue;
         assert(!fs::exists(path.path()/"sce_sys/param.json"));
-        if(value.phase==Phase::publishing&&state.blockRename)write(path.path()/"foreign","keep");
     }
+    if(value.phase==Phase::installing&&state.corruptStage)
+        for(const auto& path:fs::directory_iterator(state.stageRoot))write(path.path()/"eboot.bin","foreign program");
     if(state.cancelBeforePublish&&value.phase==Phase::writing)state.cancel.store(true);
 }
 void noStaging(const fs::path& root) {
@@ -98,12 +99,13 @@ int main() {
     char temporary[]="/tmp/opennow-forwarder-XXXXXX";assert(mkdtemp(temporary));
     const fs::path root=fs::path(temporary)/"homebrew",inventory=fs::path(temporary)/"appmeta";
     fs::create_directories(root);fs::create_directory(inventory);
-    const auto rootText=root.string(),inventoryText=inventory.string();
+    const auto rootText=root.string(),inventoryText=inventory.string(),stageText=(fs::path(temporary)/"tile-stage").string();
     const char* collisions[]={inventoryText.c_str()};
     Options options;options.paths.root=rootText.c_str();options.paths.collisionRoots=collisions;options.paths.collisionRootCount=1;
+    options.paths.stageRoot=stageText.c_str();
     const auto sourceTemplate=fs::absolute("assets/forwarder-template").string();options.paths.templateRoot=sourceTemplate.c_str();
     options.fetch=download;
-    ProgressState state;state.root=rootText;
+    ProgressState state;state.root=rootText;state.stageRoot=stageText;
     Job job{&state.cancel,progress,&state};
     const auto first=create(input,options,job);
     assert(first.code==Code::created&&first.ok()&&state.calls>=5&&downloads==2);
@@ -144,10 +146,10 @@ int main() {
     failDownload=true;assert(create(input,options).code==Code::artworkError);failDownload=false;noStaging(root);
     state.cancelBeforePublish=true;state.cancel.store(false);
     assert(create(input,options,job).code==Code::cancelled);noStaging(root);
-    state.cancelBeforePublish=false;state.cancel.store(false);state.blockRename=true;
-    assert(create(input,options,job).code==Code::ioError);noStaging(root);
+    state.cancelBeforePublish=false;state.cancel.store(false);state.corruptStage=true;
+    assert(create(input,options,job).code==Code::templateError);noStaging(root);assert(fs::is_empty(stageText));
     bool kept=false;for(const auto& entry:fs::directory_iterator(root))if(fs::exists(entry.path()/"foreign"))kept=true;assert(kept);
-    state.blockRename=false;
+    state.corruptStage=false;
     const auto corruptTemplate=(fs::path(temporary)/"bad-template").string();fs::create_directory(corruptTemplate);
     write(fs::path(corruptTemplate)/"eboot.bin","not the standard forwarder");
     options.paths.templateRoot=corruptTemplate.c_str();assert(create(input,options).code==Code::templateError);options.paths.templateRoot=sourceTemplate.c_str();
@@ -155,26 +157,14 @@ int main() {
     for(unsigned i=99200;i<=99899;++i)fs::create_directory(root/("PPSA"+std::to_string(i)));
     assert(create(input,options).code==Code::noFreeTitleId);
 
-    const auto sandboxes=fs::path(temporary)/"sandbox";
-    fs::create_directories(sandboxes/"PPSA99082_000"/"download0"/"opennow");
-    fs::create_directories(sandboxes/"PPSA99083_001"/"download0"/"opennow");
-    write(sandboxes/"PPSA99083_001"/"download0"/"opennow"/".instance-7","1");
-    fs::create_directories(sandboxes/"PPSA99082_001"/"download0"/"opennow");
-    write(sandboxes/"PPSA99082_001"/"download0"/"opennow"/".instance-7","1");
     assert(!std::strcmp(opennow_storage_file("settings.bin"),"/download0/opennow/settings.bin"));
-    assert(!rebaseSandbox(sandboxes.c_str(),".instance-8"));
     assert(!std::strcmp(opennow_app_root(),"/app0"));
-    assert(rebaseSandbox(sandboxes.c_str(),".instance-7"));
-    const auto rebased=(sandboxes/"PPSA99082_001").string();
-    assert(opennow_app_root()==rebased+"/app0");
-    assert(opennow_storage_root()==rebased+"/download0/opennow");
-    assert(opennow_storage_file("account.bin")==rebased+"/download0/opennow/account.bin");
-    assert(opennow_app_file("assets/cacert.pem")==rebased+"/app0/assets/cacert.pem");
+    assert(!std::strcmp(opennow_storage_root(),"/download0/opennow"));
+    assert(!std::strcmp(opennow_storage_file("tile-stage"),"/download0/opennow/tile-stage"));
+    assert(!std::strcmp(opennow_app_file("opennow-tile-installer.elf"),"/app0/opennow-tile-installer.elf"));
+    assert(!std::strcmp(opennow_app_file("assets/cacert.pem"),"/app0/assets/cacert.pem"));
     assert(!*opennow_storage_file("unknown.bin"));
-    fs::create_directories(rebased+"/app0/sce_sys");write(rebased+"/app0/sce_sys/param.json","{}");
-    fs::remove(sandboxes/"PPSA99082_001"/"download0"/"opennow"/".instance-7");
-    assert(rebaseSandbox(sandboxes.c_str(),".instance-7"));
-    assert(opennow_app_root()==rebased+"/app0");
+    assert(fs::is_empty(stageText));
     fs::remove_all(temporary);
     std::puts("forwarder tests passed: standard metadata, title allocation, atomic publication, cancellation and safe removal");
 }

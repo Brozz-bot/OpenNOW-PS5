@@ -14,13 +14,11 @@ and requests its stream with saved stream settings. It skips catalog browsing.
 - A standard launcher must listen on `127.0.0.1:10199`, or a compatible
   elfldr must listen on `127.0.0.1:9021`. Each forwarder carries the standard
   launcher and sends it to elfldr when the launcher is absent.
-- OpenNOW needs write access to `/data/homebrew`. Before creating workers,
-  startup checks access and, if necessary, requests the existing filesystem
-  elevation capability through the bundled, title-specific
-  `opennow-forwarder-elevator.elf`. This grants broad process privileges, not
-  a path-restricted permission. See [sandbox elevation](SANDBOX_ELEVATION.md).
-  Normal browsing remains available when elevation is unavailable. An
-  uncertain elevation result blocks startup until the title is closed.
+- Tile creation, listing, and removal require elfldr on `127.0.0.1:9021`.
+  OpenNOW streams the bundled `opennow-tile-installer.elf` to it on demand.
+  The independent payload runs in elfldr's normal unsandboxed environment;
+  OpenNOW itself never changes credentials, process roots, or jail state.
+  Missing installer support disables tile operations, not application startup.
 - A tile does not grant a game license, change an NVIDIA subscription, or
   make an unsupported game playable. Creating artwork requires Internet access.
 
@@ -94,15 +92,42 @@ The game-detail UI can wire **Add to Home Screen** as follows:
 6. Use `list` for management, and pass its selected `titleId` to `remove`.
    Refresh the list after completion.
 
-`Options` accepts an injected artwork fetcher and alternate paths for host
-tests. `Paths::collisionRoots` replaces the default console inventory with
-caller-supplied roots. Supply every custom ShadowMountPlus scan root for a
-nonstandard layout. An explicit empty list uses a nonnull array and count zero.
-Do not replace `/data/homebrew` with sandbox storage because the mounter
-cannot discover those folders.
+`Options` accepts an injected artwork fetcher. Alternate `Paths`, including
+`stageRoot` and `collisionRoots`, apply only to host tests. Native operations
+always use the bundled template, sandbox staging directory, and fixed installer
+inventory roots. Custom scan roots are not accepted over the protocol.
 
-The UI action is intentionally left for the parallel UI work. This change
-does not edit `src/ui/tv_ui.cpp` or `src/ui/tv_ui.hpp`.
+The existing UI worker keeps its `Job`/`Progress` interface. `Phase::installing`
+marks the payload handoff. No component under `src/ui/` changes here.
+
+## Installer boundary
+
+The app prepares a complete folder at
+`/download0/opennow/tile-stage/job-<pid>-<sequence>/`, including both program
+files, both JSON files, the icon, and both backgrounds. It synchronizes the
+folder before submitting an install request and removes it after the reply.
+Artwork downloading and encoding stay in the sandbox.
+
+The versioned, little-endian protocol uses the same socket as the ELF stream.
+Requests contain an operation, the caller's PID, a request ID, and either a
+simple stage name or a title ID. They never contain credentials, arbitrary
+paths, or artwork. Fixed frame sizes, bounded entry counts, socket timeouts,
+and matching request IDs make malformed or incomplete exchanges fail closed.
+The packaged ELF must end exactly at its section table so protocol bytes
+cannot be consumed as part of the executable.
+
+Every operation verifies that the supplied PID belongs to `PPSA99082` and
+resolves its root from read-only kernel process metadata. Missing, malformed,
+ambiguous, or mismatched metadata rejects the operation. No directory search,
+marker file, credential change, or app-path rebase is used. The installer reads
+only the named child of that process's `download0/opennow/tile-stage` directory.
+The [resolver evidence](TILE_INSTALLER_RESOLVER.md) records the public ABI,
+source pins, conflicting title layouts, and required console checks.
+
+`available()` lazily probes the bundled payload and elfldr from a detached
+worker, caches the answer, and returns without blocking the render thread.
+It performs no startup privilege operation and does not prove that a later
+installation will succeed.
 
 ## Files, IDs, and atomicity
 
@@ -121,8 +146,8 @@ Repeating creation for the same ID and store returns the existing tile,
 including one made by Forwarder Manager with the same argument contract.
 
 No offline allocator can reserve IDs against disconnected storage, future
-installations, or an unlisted scan root. Attach relevant storage, supply custom
-roots, and do not run another tile manager concurrently. PS5 has no private
+installations, or an unlisted scan root. Attach relevant storage and do not
+run another tile manager concurrently. PS5 has no private
 title-ID allocation range that guarantees immunity from future installations.
 
 The icon is a 512 x 512 PNG. Both backgrounds are 3840 x 2160 DX10 BC7 DDS
@@ -133,11 +158,20 @@ without allocating a full 4K image or DDS buffer. PNG encoding streams
 stored-deflate scanlines. Downloads remain capped at 1.5 MiB and source JPEGs
 at 2048 x 2048. Publisher artwork is downloaded, not distributed with the app.
 
-Creation synchronizes a hidden sibling folder, then renames it over its empty
-reservation. The mounter never sees incomplete metadata. Cancellation and
-ordinary write failures clean the stage. A power loss may leave a hidden stage
-or an empty reservation, which can be removed while OpenNOW is closed.
-Existing valid tiles are not rewritten on retry. Removal renames a recognized
+The payload validates the staged tree, rejects unknown files and symlinks,
+and verifies both pinned program hashes. It copies the permitted files into
+a hidden sibling folder under `/data/homebrew`, regenerates `param.json`
+with the allocated title ID, synchronizes the files and directories, and
+renames the hidden folder over its exclusive empty reservation. Metadata,
+allocation, validation, copying, listing, and removal share one implementation
+in `src/forwarder/tile_store.cpp`, compiled by the payload and host tests.
+
+The mounter never sees incomplete metadata. Cancellation before payload handoff
+and ordinary failures clean the app's stage. Installation is not cancellable
+after handoff; its final result takes precedence over a late cancel request.
+A power loss may leave a hidden stage or an empty reservation, which can be
+removed while OpenNOW is closed. Existing valid tiles are not rewritten on
+retry. Removal renames a recognized
 tile out of the visible namespace before deleting it. An ownership record
 allows interrupted deletion to finish on retry. Symlinks are not traversed.
 
@@ -146,12 +180,21 @@ allows interrupted deletion to finish on retry. Symlinks are not traversed.
 `bash tools/test-forwarder.sh` tests metadata against pinned `psfwd`, title-ID
 collisions and exhaustion, standard-reader interoperability, cancellation,
 failed publication, interrupted removal, symlink safety, argument parsing,
-launch resolution, and encoded images. `bash tools/test-port.sh` includes
+PID/title/root resolution, protocol framing and replies, launch resolution,
+and encoded images. `bash tools/test-port.sh` includes
 these checks under ASan and UBSan. `tools/verify-forwarder-template.py` checks
 both vendored program hashes. The writer checks them before creation too.
 
-Console tests are still required for elevation and retained sandbox paths,
-native directory enumeration and writes, ShadowMountPlus registration and
+After committing the source and running the native GPU build, import audit,
+and `tools/package-manifest.py`, run
+`python3 tools/package-tile-test.py --output ~/.capy/work/build-tiles/`.
+It rejects a dirty or mismatched source commit, verifies every packaged hash
+and required asset, checks the installer ELF extent, and writes a deterministic
+test ZIP with its source manifest and a separate `SHA256SUMS` file.
+
+Console tests are still required for PID metadata visibility from elfldr,
+unchanged sandbox font/certificate/storage access, GPU qualification, native
+directory enumeration and writes, ShadowMountPlus registration and
 removal, artwork display, launcher bootstrap, argv delivery, saved-login
 refresh, and direct game streaming. Host and build checks do not prove those.
 
