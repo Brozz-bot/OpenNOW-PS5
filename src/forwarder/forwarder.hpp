@@ -8,7 +8,7 @@ namespace opennow::forwarder {
 inline constexpr char targetTitleId[]="PPSA99082";
 enum class Code { created, alreadyExists, removed, notFound, listed, available, unavailable,
                   invalidGame, noFreeTitleId, conflict, cancelled, artworkError, templateError,
-                  ioError, unsafeElevation };
+                  ioError, unsafeElevation, sandboxLost };
 struct Result {
     Code code=Code::ioError;
     int error=0;
@@ -29,7 +29,7 @@ struct Job {
 };
 struct Paths {
     const char* root="/data/homebrew";
-    const char* templateRoot="/app0/assets/forwarder-template";
+    const char* templateRoot=nullptr;
     const char* const* collisionRoots=nullptr;
     unsigned collisionRootCount=0;
 };
@@ -44,6 +44,7 @@ using Visit=bool(*)(void*,const Entry&) noexcept;
 Result initialize() noexcept;
 bool available() noexcept;
 bool fatalStartup() noexcept;
+bool rebaseSandbox(const char* sandboxes,const char* marker) noexcept;
 const char* message(Code code) noexcept;
 Result create(const Game& game,const Options& options={},const Job& job={}) noexcept;
 Result list(Visit visit,void* context,const Paths& paths={}) noexcept;

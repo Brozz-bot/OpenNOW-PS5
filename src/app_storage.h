@@ -1,14 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#define OPENNOW_STORAGE_ROOT "/download0/opennow"
-#define OPENNOW_ACCOUNT_PATH OPENNOW_STORAGE_ROOT "/account.bin"
-#define OPENNOW_SETTINGS_PATH OPENNOW_STORAGE_ROOT "/settings.bin"
-#define OPENNOW_SESSION_PATH OPENNOW_STORAGE_ROOT "/session.bin"
-#define OPENNOW_ARTWORK_CACHE_PATH OPENNOW_STORAGE_ROOT "/artwork"
+#define OPENNOW_SANDBOX_APP_ROOT "/app0"
+#define OPENNOW_SANDBOX_STORAGE_ROOT "/download0/opennow"
+#define OPENNOW_STORAGE_ROOT opennow_storage_root()
+#define OPENNOW_ACCOUNT_PATH opennow_storage_file("account.bin")
+#define OPENNOW_SETTINGS_PATH opennow_storage_file("settings.bin")
+#define OPENNOW_SESSION_PATH opennow_storage_file("session.bin")
+#define OPENNOW_ARTWORK_CACHE_PATH opennow_storage_file("artwork")
+#define OPENNOW_CACERT_PATH opennow_app_file("assets/cacert.pem")
 #define OPENNOW_LEGACY_ACCOUNT_PATH "/data/opennow/account.bin"
 
 #ifdef __cplusplus
+extern "C" {
+#endif
+const char *opennow_app_root(void);
+const char *opennow_storage_root(void);
+const char *opennow_app_file(const char *name);
+const char *opennow_storage_file(const char *name);
+int opennow_rebase_sandbox(const char *sandbox);
+#ifdef __cplusplus
+}
+
 #include "account_file.hpp"
 
 namespace opennow::appStorage

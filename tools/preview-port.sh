@@ -2,13 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/host-tests build/preview build/preview-art
+${CC:-cc} -std=c11 -O1 -g -c src/platform/app_paths.c -o build/host-tests/app-paths.o
 ${CC:-cc} -O2 -c src/vendor/qrcodegen.c -o build/host-tests/qrcode.o
 link_flags=(-Wl,--gc-sections)
 if [[ $(uname -s) == Darwin ]]; then link_flags=(-Wl,-dead_strip); fi
 ${CC:-cc} -O2 -c src/vendor/cJSON.c -o build/host-tests/preview-cjson.o
 ${CXX:-c++} -std=c++20 -O2 -ffunction-sections -fdata-sections -DOPENNOW_HOST_PREVIEW -Isrc "${link_flags[@]}" \
     src/main.cpp src/demo_renderer.cpp src/ui/font.cpp src/ui/tv_ui.cpp src/ui/artwork.cpp src/cloud.cpp src/gfn.cpp \
-    src/forwarder/launch_args.cpp tests/preview_stubs.cpp tests/host_entropy.cpp src/random.cpp build/host-tests/qrcode.o build/host-tests/preview-cjson.o -pthread -o build/host-tests/preview
+    src/forwarder/launch_args.cpp tests/preview_stubs.cpp tests/host_entropy.cpp src/random.cpp build/host-tests/qrcode.o build/host-tests/preview-cjson.o -pthread build/host-tests/app-paths.o -o build/host-tests/preview
 covers=(
     101611411/ZZ/GAME_BOX_ART_01_1f4d5087-b764-4dc8-9b23-5a3e42d8fd4e.jpg 101611411/ZZ/HERO_IMAGE_01_7b84d3a8-1e36-4f45-9f82-11de22a0105f.jpg
     101238711/ZZ/GAME_BOX_ART_01_967e038e-78ce-45bf-9d89-adb8c7c7abb1.jpg 101238711/ZZ/HERO_IMAGE_01_652bc3b4-bf4a-4531-bdc2-d95acee16d15.jpg

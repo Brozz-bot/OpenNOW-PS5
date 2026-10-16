@@ -255,7 +255,7 @@ for(unsigned i=0;i<64;++i)if(!peer_connection_loop(pc_)||failed_)break;
     stats.packets_received,stats.access_units_completed,stats.access_units_dropped,media_.frames.load(),media_.decodeError.load(),media_.audioPackets.load(),media_.audioErrors.load());
    // Replace a small private snapshot, so late symptoms remain observable after
    // the bounded startup media log has filled. No session/network secrets.
-   if(auto* live=std::fopen(OPENNOW_STORAGE_ROOT "/live-video.status","wb")){
+   if(auto* live=std::fopen(opennow_storage_file("live-video.status"),"wb")){
     std::fprintf(live,"version=" OPENNOW_VERSION " elapsed_us=%llu width=%d height=%d bytes=%u decoded=%u presented=%u error=%d hdr=%d lost=%u gaps=%u queue_lost=%u resets=%u qos_open=%d qos_queued=%u capture_bytes=%zu capture_done=%d\n",
      static_cast<unsigned long long>(now-started_),media_.decodedWidth.load(),media_.decodedHeight.load(),media_.videoBytes.load(),media_.frames.load(),media_.presented.load(),media_.decodeError.load(),media_.actualHdr.load(),stats.access_units_dropped,stats.sequence_gaps,media_.queueDrops.load(),media_.recoveryResets.load(),peer_connection_datachannel_is_open(pc_,6),qos_.queuedCount(),capture_.bytes(),capture_.done());
     std::fprintf(live,"au_received=%u queue_depth=%u queue_peak=%u queue_max_us=%llu decode_calls=%u decode_us=%llu decode_max_us=%llu gpu_calls=%u gpu_us=%llu gpu_max_us=%llu\n",

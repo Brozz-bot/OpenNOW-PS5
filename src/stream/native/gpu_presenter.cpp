@@ -2,6 +2,7 @@
 // Public ps5-opengl runtime; foreign-memory and HDR extensions are adapted
 // from the pinned GPL-2.0-or-later kodi-ps5 implementation (see notices).
 #include "gpu_presenter.hpp"
+#include "../../app_storage.h"
 #include "../video_geometry.hpp"
 #ifdef OPENNOW_GPU
 #include "hardware_decoder.hpp"
@@ -155,7 +156,7 @@ void qualifyPipeline(const video::NativeMode& mode,const std::vector<std::uint8_
 bool preflight(unsigned index,const StreamSettings& settings,const char* name){
  const auto mode=video::nativeMode(settings);
  if(!mode)return false;
- char path[192];std::snprintf(path,sizeof(path),"/app0/assets/%s",name);auto* f=std::fopen(path,"rb");
+ char path[192];std::snprintf(path,sizeof(path),"%s/assets/%s",opennow_app_root(),name);auto* f=std::fopen(path,"rb");
  if(!f){std::snprintf(path,sizeof(path),"assets/%s",name);f=std::fopen(path,"rb");}if(!f){opennow_media_note("GPU qualification fixture missing");return false;}
  std::vector<std::uint8_t> data(1024*1024);const auto bytes=std::fread(data.data(),1,data.size(),f);std::fclose(f);if(!bytes||bytes==data.size())return false;
  if(settings.tenBit()){

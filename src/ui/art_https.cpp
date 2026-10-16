@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "artwork.hpp"
+#include "../app_storage.h"
 #include <cstring>
 #include <curl/curl.h>
 #ifdef OPENNOW_PS5
@@ -52,7 +53,7 @@ bool httpsFetch(void*,const char* url,unsigned char* buffer,std::size_t capacity
     curl_easy_setopt(easy,CURLOPT_SSL_VERIFYHOST,2L);
 #ifdef OPENNOW_PS5
     console_curl_setup(easy);
-    curl_easy_setopt(easy,CURLOPT_CAINFO,"/app0/assets/cacert.pem");
+    curl_easy_setopt(easy,CURLOPT_CAINFO,OPENNOW_CACERT_PATH);
 #endif
     const CURLcode result=curl_easy_perform(easy);
     long status=0;

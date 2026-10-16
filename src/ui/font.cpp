@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "font.hpp"
+#include "../app_storage.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -140,7 +141,7 @@ bool loadFonts() noexcept {
     attempted=true;
     for(unsigned i=0;i<faceCount;++i) {
         char path[160];
-        std::snprintf(path,sizeof(path),"/app0/assets/fonts/%s",files[i]);
+        std::snprintf(path,sizeof(path),"%s/assets/fonts/%s",opennow_app_root(),files[i]);
         faces[i].data=readFile(path);
 #ifdef OPENNOW_HOST_PREVIEW
         if(!faces[i].data){std::snprintf(path,sizeof(path),"assets/fonts/%s",files[i]);faces[i].data=readFile(path);}

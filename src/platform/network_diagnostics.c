@@ -12,7 +12,7 @@ extern int sceKernelClose(int);
 static unsigned entries;
 void opennow_network_note(const char* message) {
     if (__atomic_fetch_add(&entries,1,__ATOMIC_RELAXED)>=64) return;
-    int fd=sceKernelOpen(OPENNOW_STORAGE_ROOT "/network.log",O_WRONLY|O_CREAT|O_APPEND,0644);
+    int fd=sceKernelOpen(opennow_storage_file("network.log"),O_WRONLY|O_CREAT|O_APPEND,0644);
     if (fd<0) return;
     size_t size=strnlen(message,384);
     sceKernelWrite(fd,message,size);sceKernelWrite(fd,"\n",1);sceKernelClose(fd);
@@ -26,7 +26,7 @@ void opennow_network_result(const char* operation,int result,int error) {
 void opennow_media_note(const char* message) {
     static unsigned count;
     if (__atomic_fetch_add(&count,1,__ATOMIC_RELAXED)>=160) return;
-    int fd=sceKernelOpen(OPENNOW_STORAGE_ROOT "/media.log",O_WRONLY|O_CREAT|O_APPEND,0644);
+    int fd=sceKernelOpen(opennow_storage_file("media.log"),O_WRONLY|O_CREAT|O_APPEND,0644);
     if(fd<0)return;
     sceKernelWrite(fd,message,strnlen(message,384));sceKernelWrite(fd,"\n",1);sceKernelClose(fd);
 }
@@ -35,6 +35,6 @@ void opennow_media_note(const char* message) {
 // Store the first bounded HEVC SPS, never VCL/game pictures or audio.
 void opennow_hevc_sps_note(const uint8_t* nal,size_t size) {
  if(!nal||size<5||size>2048||((nal[0]>>1)&63)!=33)return;
- int fd=sceKernelOpen(OPENNOW_STORAGE_ROOT "/video-sps.bin",O_WRONLY|O_CREAT|O_TRUNC,0644);
+ int fd=sceKernelOpen(opennow_storage_file("video-sps.bin"),O_WRONLY|O_CREAT|O_TRUNC,0644);
  if(fd<0)return;sceKernelWrite(fd,nal,size);sceKernelClose(fd);
 }

@@ -1,4 +1,5 @@
 #include "WebSocketClient.hpp"
+#include "../app_storage.h"
 #include "websocket_handshake.hpp"
 #include "../platform/console_curl.h"
 #include "../random.hpp"
@@ -111,7 +112,7 @@ bool WebSocketClient::connect() {
     curl_easy_setopt(curl_, CURLOPT_CONNECT_ONLY, 1L);
     curl_easy_setopt(curl_, CURLOPT_HTTP_VERSION, static_cast<long>(CURL_HTTP_VERSION_1_1));
     console_curl_setup(curl_);
-    curl_easy_setopt(curl_,CURLOPT_CAINFO,"/app0/assets/cacert.pem");
+    curl_easy_setopt(curl_,CURLOPT_CAINFO,OPENNOW_CACERT_PATH);
     curl_easy_setopt(curl_,CURLOPT_SSL_VERIFYPEER,1L);
     curl_easy_setopt(curl_,CURLOPT_SSL_VERIFYHOST,2L);
     curl_easy_setopt(curl_,CURLOPT_PROXY,"");

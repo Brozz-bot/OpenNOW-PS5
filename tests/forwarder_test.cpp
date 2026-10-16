@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "forwarder/forwarder.hpp"
+#include "app_storage.h"
 #include "vendor/cJSON.h"
 #include "../vendor/ps5-forwarder-format/include/psfwd.h"
 #include <cassert>
@@ -153,6 +154,27 @@ int main() {
 
     for(unsigned i=99200;i<=99899;++i)fs::create_directory(root/("PPSA"+std::to_string(i)));
     assert(create(input,options).code==Code::noFreeTitleId);
+
+    const auto sandboxes=fs::path(temporary)/"sandbox";
+    fs::create_directories(sandboxes/"PPSA99082_000"/"download0"/"opennow");
+    fs::create_directories(sandboxes/"PPSA99083_001"/"download0"/"opennow");
+    write(sandboxes/"PPSA99083_001"/"download0"/"opennow"/".instance-7","1");
+    fs::create_directories(sandboxes/"PPSA99082_001"/"download0"/"opennow");
+    write(sandboxes/"PPSA99082_001"/"download0"/"opennow"/".instance-7","1");
+    assert(!std::strcmp(opennow_storage_file("settings.bin"),"/download0/opennow/settings.bin"));
+    assert(!rebaseSandbox(sandboxes.c_str(),".instance-8"));
+    assert(!std::strcmp(opennow_app_root(),"/app0"));
+    assert(rebaseSandbox(sandboxes.c_str(),".instance-7"));
+    const auto rebased=(sandboxes/"PPSA99082_001").string();
+    assert(opennow_app_root()==rebased+"/app0");
+    assert(opennow_storage_root()==rebased+"/download0/opennow");
+    assert(opennow_storage_file("account.bin")==rebased+"/download0/opennow/account.bin");
+    assert(opennow_app_file("assets/cacert.pem")==rebased+"/app0/assets/cacert.pem");
+    assert(!*opennow_storage_file("unknown.bin"));
+    fs::create_directories(rebased+"/app0/sce_sys");write(rebased+"/app0/sce_sys/param.json","{}");
+    fs::remove(sandboxes/"PPSA99082_001"/"download0"/"opennow"/".instance-7");
+    assert(rebaseSandbox(sandboxes.c_str(),".instance-7"));
+    assert(opennow_app_root()==rebased+"/app0");
     fs::remove_all(temporary);
     std::puts("forwarder tests passed: standard metadata, title allocation, atomic publication, cancellation and safe removal");
 }
