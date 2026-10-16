@@ -9,7 +9,7 @@
 namespace opennow::art {
 enum class Kind { tile, hero };
 enum class State { missing, loading, ready, failed };
-constexpr unsigned tileWidth=248, tileHeight=350, heroWidth=960, heroHeight=540;
+constexpr unsigned tileWidth=156, tileHeight=232, heroWidth=960, heroHeight=540;
 constexpr std::size_t maxCompressedBytes=std::size_t(3)<<19;
 constexpr unsigned maxSourceDimension=2048;
 constexpr unsigned tileSlots=36, heroSlots=2;
@@ -37,7 +37,7 @@ public:
     Cache& operator=(const Cache&)=delete;
     bool ready() const noexcept {return scratch_!=nullptr&&compressed_!=nullptr;}
     State want(const char* artwork,Kind kind,unsigned frame) noexcept;
-    bool draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha) noexcept;
+    bool draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha,unsigned visibleHeight=0) noexcept;
     bool drawHero(ps5::demo::Canvas& canvas,const char* artwork,int x,int y,unsigned width,unsigned height,
                   const std::uint8_t* columnAlpha,const std::uint8_t* rowAlpha) noexcept;
     unsigned generation() const noexcept {return generation_.load();}

@@ -32,6 +32,15 @@ int main() {
  settings={};settings.network=static_cast<NetworkPolicy>(2);assert(validateSettings(settings)==SettingsError::network);
  settings={};settings.mode=VideoMode::h264Hardware;assert(validateSettings(settings)==SettingsError::network);
  settings.network=NetworkPolicy::fixed;assert(validateSettings(settings)==SettingsError::none);
+ for(int value:{INT_MIN,-1,51,INT_MAX}){
+  settings={};settings.controller_left_deadzone=value;assert(validateSettings(settings)==SettingsError::controller);
+  settings={};settings.controller_right_deadzone=value;assert(validateSettings(settings)==SettingsError::controller);
+ }
+ for(int value:{INT_MIN,-1,101,INT_MAX}){settings={};settings.vibration_intensity=value;assert(validateSettings(settings)==SettingsError::controller);}
+ for(int value:{INT_MIN,9,301,INT_MAX}){settings={};settings.mouse_sensitivity=value;assert(validateSettings(settings)==SettingsError::mouse);}
+ for(int value:{0,5,50}){settings={};settings.controller_left_deadzone=settings.controller_right_deadzone=value;assert(validateSettings(settings)==SettingsError::none);}
+ for(int value:{0,100}){settings={};settings.vibration_intensity=value;assert(validateSettings(settings)==SettingsError::none);}
+ for(int value:{10,100,300}){settings={};settings.mouse_sensitivity=value;assert(validateSettings(settings)==SettingsError::none);}
 
  assert(nativeMode(NativeCodec::hevc_main10,1920,1080,60)->level==123);
  assert(nativeMode(NativeCodec::hevc_main10,1920,2160,60)->level==150);

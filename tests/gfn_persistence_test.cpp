@@ -91,13 +91,13 @@ int main() {
         Reply{"/token",429,"rate limited"}, Reply{"/token",0,"",nullptr,nullptr,"offline"},
         Reply{"/token",200,"bad JSON"}, Reply{"/token",400,R"({"error":"invalid_request"})"}}) {
         const auto saved = contents(path.c_str());
-        Fake fake{{reply,{"/token",200,R"({"access_token":"access4","expires_in":180})"},
+        Fake fake{{reply,reply,{"/token",200,R"({"access_token":"access4","expires_in":180})"},
             {"/userinfo",200,R"({"sub":"synthetic-user"})",nullptr,"access4"},
             {"/client_token",404,"{}"}}};
         opennow::Login login(Fake::request,&fake,path.c_str()); char device[37]{};
         assert(login.restore(device,0)); assert(login.view().state == opennow::State::requesting);
         assert(contents(path.c_str()) == saved);
-        login.tick(29); assert(fake.calls == 1);
+        login.tick(29); assert(fake.calls == 2);
         login.tick(30); assert(login.view().state == opennow::State::authenticated);
         assert(!std::strcmp(login.cloudToken(),"cloud3"));
     }
@@ -113,20 +113,48 @@ int main() {
         assert(contents(path.c_str()) == saved);
     }
     {
+        Fake fake{{{"/token",200,R"({"access_token":"restored-access","id_token":"restored-cloud","refresh_token":"restored-rotation","expires_in":180})"},
+            {"/userinfo",503,"temporary"},
+            {"/token",200,R"({"access_token":"retried-access","expires_in":180})"},
+            {"/userinfo",200,R"({"sub":"synthetic-user"})"},{"/client_token",404,"{}"}}};
+        opennow::Login login(Fake::request,&fake,path.c_str()); char device[37]{};
+        assert(login.restore(device,0));
+        assert(login.view().state == opennow::State::requesting && !login.view().profileVerified);
+        assert(!*login.userId());
+        assert(!*login.cloudToken());
+        assert(contents(path.c_str()).find("restored-rotation") != std::string::npos);
+        login.tick(30); assert(login.view().state == opennow::State::authenticated);
+        assert(!std::strcmp(login.cloudToken(),"restored-cloud"));
+    }
+    {
         // Renewal must also occur while the app remains open, and rotated tokens
         // must reach disk even if profile verification then fails temporarily.
         Fake fake{{{"/token",200,R"({"access_token":"access5","expires_in":180})"},
             {"/userinfo",200,R"({"sub":"synthetic-user"})"}, {"/client_token",404,"{}"},
-            {"/token",200,R"({"access_token":"access6","refresh_token":"new-refresh","expires_in":180})"},
+            {"/token",200,R"({"access_token":"access6","id_token":"cloud6","refresh_token":"new-refresh","expires_in":180})"},
             {"/userinfo",503,"temporary"},
-            {"/token",200,R"({"access_token":"access7","expires_in":180})"},
+            {"/token",200,R"({"access_token":"access7","id_token":"cloud7","expires_in":180})"},
             {"/userinfo",200,R"({"sub":"synthetic-user"})"}, {"/client_token",404,"{}"}}};
         opennow::Login login(Fake::request,&fake,path.c_str()); char device[37]{};
         assert(login.restore(device,0)); login.tick(119); assert(fake.calls == 3);
-        login.tick(120); assert(login.view().state == opennow::State::requesting);
+        login.tick(120); assert(login.view().state == opennow::State::authenticated);
+        assert(login.view().profileVerified && login.view().sessionSaved);
+        assert(!std::strcmp(login.cloudToken(),"cloud6"));
         assert(contents(path.c_str()).find("new-refresh") != std::string::npos);
-        login.tick(150); assert(login.view().state == opennow::State::authenticated);
+        assert(contents(path.c_str()).find("cloud6") != std::string::npos);
+        login.tick(150); assert(fake.calls == 5);
+        login.tick(240); assert(login.view().state == opennow::State::authenticated);
+        assert(!std::strcmp(login.cloudToken(),"cloud7"));
         login.cancel(); assert(access(path.c_str(),F_OK) != 0); assert(!*login.cloudToken());
+    }
+    signIn(path.c_str());
+    {
+        Fake fake{{{"/token",200,R"({"access_token":"foreign-access","id_token":"foreign-cloud","refresh_token":"foreign-refresh","expires_in":180})"},
+            {"/userinfo",200,R"({"sub":"different-user"})"}}};
+        opennow::Login login(Fake::request,&fake,path.c_str()); char device[37]{};
+        assert(login.restore(device,0));
+        assert(login.view().state == opennow::State::failed && !*login.cloudToken());
+        assert(access(path.c_str(),F_OK) != 0);
     }
     signIn(path.c_str());
     {

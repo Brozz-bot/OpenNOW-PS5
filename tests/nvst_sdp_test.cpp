@@ -179,7 +179,7 @@ int main()
     }
     assert(selected==opennow::StreamProfile::native_hdr120);
     const std::string hevcOffer="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 98 100\r\na=rtpmap:98 H264/90000\r\na=rtpmap:100 H265/90000\r\na=fmtp:100 profile-id=2;level-id=156;sprop-max-don-diff=0\r\n";
-    const std::string rawHevc="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H265/90000\r\na=fmtp:96 profile-id=2;level-id=156;sprop-max-don-diff=0\r\n";
+    const std::string rawHevc=answer+"m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H265/90000\r\na=fmtp:96 profile-id=2;level-id=156;sprop-max-don-diff=0\r\n";
     assert(opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,rawHevc,settings).empty());
     const auto hdrAnswer=opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,hevcOffer,hdr);
     assert(hdrAnswer.find("a=rtpmap:100 H265/90000")!=std::string::npos);
@@ -203,5 +203,121 @@ int main()
     assert(opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,"v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 98\r\na=rtpmap:98 H264/90000\r\n",hdr).empty());
     auto interleaved=hevcOffer;interleaved.replace(interleaved.find("sprop-max-don-diff=0"),20,"sprop-max-don-diff=1");
     assert(opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,interleaved,hdr).empty());
+    const std::string rawVideo="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\n"
+        "a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1\r\na=rtcp-fb:96 nack\r\na=rtcp-fb:96 nack pli\r\na=sendrecv\r\n";
+    const std::string orderedOffer="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 98\r\n"
+        "a=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1\r\n"
+        "a=rtpmap:102 H264/90000\r\na=fmtp:102 packetization-mode=1\r\n";
+    const auto orderedAnswer=opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,orderedOffer,settings);
+    assert(orderedAnswer.find("m=video 9 UDP/TLS/RTP/SAVPF 102\r\n")!=std::string::npos);
+    assert(orderedAnswer.find("a=rtcp-fb:")==std::string::npos);
+    const std::string selectedOffer="v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 98\r\na=sendonly\r\n"
+        "a=rtpmap:100 H264/90000\r\na=fmtp:100 packetization-mode=1\r\n"
+        "a=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1\r\n"
+        "a=rtcp-fb:* nack\r\na=rtcp-fb:* nack pli\r\na=rtcp-fb:98 goog-remb\r\n";
+    const auto selectedAnswer=opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,selectedOffer,settings);
+    assert(selectedAnswer.find("m=video 9 UDP/TLS/RTP/SAVPF 98\r\n")!=std::string::npos);
+    assert(selectedAnswer.find("a=rtcp-fb:98 nack\r\n")!=std::string::npos);
+    assert(selectedAnswer.find("a=rtcp-fb:98 nack pli\r\n")!=std::string::npos);
+    assert(selectedAnswer.find("goog-remb")==std::string::npos);
+    for(const auto* direction:{"a=recvonly\r\n","a=inactive\r\n"}){
+        assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,orderedOffer+direction,settings).empty());
+        assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,std::string("v=0\r\n")+direction+orderedOffer.substr(5),settings).empty());
+    }
+    auto disabledOffer=orderedOffer;disabledOffer.replace(disabledOffer.find("m=video 9"),9,"m=video 0");
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,disabledOffer,settings).empty());
+    for(const auto* mapping:{"h264/90000","H264/90000"}){
+        const auto minimal="v=0\r\nm=video 9 RTP/AVP 98\r\na=rtpmap:98 "+std::string(mapping)+"\r\n";
+        assert(!opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,minimal,settings).empty());
+    }
+    for(const auto* mapping:{"H264/8000","H264/90000/2"})
+        assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,"m=video 9 RTP/AVP 98\r\na=rtpmap:98 "+std::string(mapping)+"\r\n",settings).empty());
+    for(const auto* params:{"profile-id=2junk","profile-id=2;profile-id=1","sprop-max-don-diff=bad","sprop-max-don-diff=1","profile-id=2;sprop-max-don-diff=0junk"}){
+        assert(opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,noFmtp+"a=fmtp:100 "+params+"\r\n",hdr).empty());
+    }
+    const auto unknownKey=opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,noFmtp+"a=fmtp:100 x-profile-id=1;sprop-max-don-diff=0\r\n",hdr);
+    assert(unknownKey.find(";profile-id=2")!=std::string::npos);
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rawHevc,noFmtp,hdr).find("a=fmtp:100 profile-id=2;level-id=156;sprop-max-don-diff=0\r\n")!=std::string::npos);
+    const auto wrongMode="m=video 9 RTP/AVP 98\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=10\r\n";
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,wrongMode,settings).empty());
+    const std::string alternateRaw="v=0\r\nm=video 9 RTP/AVP 120 121\r\nc=IN IP4 0.0.0.0\r\n"
+        "b=AS:1\r\nb=TIAS:1000\r\na=rtpmap:120 VP8/90000\r\na=rtpmap:121 rtx/90000\r\na=fmtp:121 apt=120\r\n"
+        "a=rtcp-fb:120 goog-remb\r\na=sendonly\r\n";
+    const auto rebuilt=opennow::sdp::AdaptAnswerSdpToOffer(alternateRaw,selectedOffer,settings);
+    assert(rebuilt.find("a=rtpmap:98 H264/90000\r\n")!=std::string::npos);
+    assert(rebuilt.find("VP8")==std::string::npos&&rebuilt.find("rtx")==std::string::npos&&rebuilt.find("apt=")==std::string::npos);
+    assert(rebuilt.find("a=sendonly")==std::string::npos&&rebuilt.find("a=recvonly\r\n")!=std::string::npos);
+    assert(rebuilt.find("b=TIAS:")==std::string::npos);
+    assert(rebuilt.find("b=AS:")==rebuilt.rfind("b=AS:"));
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rebuilt,selectedOffer,settings)==rebuilt);
+    const auto nvstHdr=opennow::webrtc::BuildNvstSdp(answer,hdr,{});
+    assert(HasLine(nvstHdr,"a=video.dx9EnableHdr:1"));
+    assert(nvstHdr.find("m=mic")==std::string::npos);
+    const auto nvstSdr=opennow::webrtc::BuildNvstSdp(answer,sdrMain10,{});
+    assert(HasLine(nvstSdr,"a=video.dx9EnableHdr:0"));
+    assert(opennow::webrtc::BuildNvstSdp("v=0\r\n",settings,{}).empty());
+    for(int fps:{30,60,90,120}){
+        auto target=hdr;target.fps=fps;
+        const auto result=opennow::webrtc::BuildNvstSdp(answer,target,{});
+        assert(HasLine(result,"a=video.framePacing.pid.minTargetFrameTimeUs:"+std::to_string(950000/fps)));
+        assert(HasAttribute(result,"video.encoderFeatureSetting:")==(fps>60));
+        assert(HasAttribute(result,"video.encoderPreset:")==(fps>60));
+        assert(HasAttribute(result,"vqos.maxStreamFpsEstimate:")==(fps>60));
+        if(fps>60){
+            assert(HasLine(result,"a=video.encoderFeatureSetting:47"));
+            assert(HasLine(result,"a=video.encoderPreset:6"));
+            assert(HasLine(result,"a=bwe.iirFilterFactor:8"));
+            assert(HasLine(result,"a=vqos.resControl.dfc.useClientFpsPerf:0"));
+            assert(HasLine(result,"a=vqos.maxStreamFpsEstimate:"+std::to_string(fps)));
+            assert(HasLine(result,"a=video.fbcDynamicFpsGrabTimeoutMs:"+std::to_string(fps==90?9:6)));
+            assert(HasLine(result,"a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:"+std::to_string(fps==90?11:9)));
+        }
+        assert(HasLine(result,"a=packetPacing.numGroups:5"));
+        assert(HasLine(result,"a=vqos.fec.repairPercent:5"));
+    }
+    for(const auto quality:{opennow::QualityMode::original,opennow::QualityMode::adaptive,opennow::QualityMode::clarity}){
+        auto target=hdr;target.quality=quality;
+        const auto result=opennow::webrtc::BuildNvstSdp(answer,target,{});
+        assert(HasLine(result,"a=packetPacing.numGroups:"+std::to_string(quality==opennow::QualityMode::original?5:quality==opennow::QualityMode::adaptive?6:8)));
+        assert(HasLine(result,"a=vqos.fec.repairPercent:"+std::to_string(quality==opennow::QualityMode::original?5:quality==opennow::QualityMode::adaptive?8:10)));
+    }
+    for(const auto* missing:{"a=ice-ufrag:","a=ice-pwd:","a=fingerprint:sha-256 "}){
+        auto incomplete=answer;
+        const auto start=incomplete.find(missing);
+        incomplete.erase(start,incomplete.find("\r\n",start)+2-start);
+        assert(opennow::webrtc::BuildNvstSdp(incomplete,settings,{}).empty());
+        incomplete=answer;
+        const auto value=incomplete.find(missing)+std::char_traits<char>::length(missing);
+        incomplete.replace(value,incomplete.find("\r\n",value)-value," \t ");
+        assert(opennow::webrtc::BuildNvstSdp(incomplete,settings,{}).empty());
+    }
+    opennow::webrtc::RiInputCapabilities caps;
+    assert(opennow::sdp::ParseRiInputCapabilities("",caps));
+    assert(caps.partial_reliable_threshold_ms==16&&caps.hid_device_mask==UINT32_MAX&&caps.partial_reliable_gamepad_mask==15&&caps.partial_reliable_hid_mask==UINT32_MAX);
+    assert(opennow::sdp::ParseRiInputCapabilities("a=ri.partialReliableThresholdMs:65535\r\na=ri.hidDeviceMask:0x80000001\r\na=ri.enablePartiallyReliableTransferGamepad:0\r\n",caps));
+    assert(caps.partial_reliable_threshold_ms==65535&&caps.hid_device_mask==0x80000001u&&caps.partial_reliable_hid_mask==caps.hid_device_mask&&caps.partial_reliable_gamepad_mask==0);
+    assert(opennow::sdp::ParseRiInputCapabilities("a=ri.hidDeviceMask:7\na=ri.enablePartiallyReliableTransferHid:4294967295\r\na=ri.enablePartiallyReliableTransferGamepad:-1\n",caps));
+    assert(caps.hid_device_mask==7&&caps.partial_reliable_hid_mask==UINT32_MAX&&caps.partial_reliable_gamepad_mask==UINT32_MAX);
+    for(const auto* value:{"","0","-1","65536","16junk","0x10","4294967296"}){
+        auto previous=caps;
+        assert(!opennow::sdp::ParseRiInputCapabilities("a=ri.partialReliableThresholdMs:"+std::string(value)+"\r\n",caps));
+        assert(caps.hid_device_mask==previous.hid_device_mask&&caps.partial_reliable_threshold_ms==previous.partial_reliable_threshold_ms);
+    }
+    for(const auto* attribute:{"ri.hidDeviceMask","ri.enablePartiallyReliableTransferHid","ri.enablePartiallyReliableTransferGamepad"}){
+        for(const auto* value:{"","-2","4294967296","0x100000000","0x","0xgg","7junk","1.0"})
+            assert(!opennow::sdp::ParseRiInputCapabilities("a="+std::string(attribute)+":"+value+"\r\n",caps));
+        for(const auto* value:{"0","4294967295","-1","0xffffffff","0X80000000"})
+            assert(opennow::sdp::ParseRiInputCapabilities("a="+std::string(attribute)+":"+value+"\r\n",caps));
+        assert(!opennow::sdp::ParseRiInputCapabilities("a="+std::string(attribute)+":1\r\na="+attribute+":2\r\n",caps));
+    }
+    const auto nackOnly=opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,orderedOffer+"a=rtcp-fb:102 nack\r\na=rtcp-fb:* nack\r\n",settings);
+    assert(nackOnly.find("a=rtcp-fb:102 nack\r\n")!=std::string::npos);
+    assert(nackOnly.find("nack pli")==std::string::npos);
+    assert(nackOnly.find("a=rtcp-fb:")==nackOnly.rfind("a=rtcp-fb:"));
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,"m=video 9 RTP/AVP 98\r\na=rtpmap:100 H264/90000\r\n",settings).empty());
+    auto duplicateFmtp=orderedOffer+"a=fmtp:102 packetization-mode=0\r\n";
+    assert(opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,duplicateFmtp,settings).empty());
+    const auto mixedOffer="v=0\na=recvonly\r\nm=video 9 RTP/AVP 98\na=sendonly\r\na=rtpmap:98 H264/90000\n";
+    assert(!opennow::sdp::AdaptAnswerSdpToOffer(rawVideo,mixedOffer,settings).empty());
     return 0;
 }

@@ -1,6 +1,8 @@
 // Protocol helpers adapted from OpenNOW-Switch, MIT.
 #include "sdp.hpp"
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -24,17 +26,16 @@ std::vector<std::string> SplitSdpLines(const std::string& sdp)
     size_t start = 0;
 
     while (start < sdp.size()) {
-        size_t end = sdp.find("\r\n", start);
-        if (end == std::string::npos)
-            end = sdp.find('\n', start);
+        size_t end = sdp.find('\n', start);
 
         if (end == std::string::npos) {
             lines.push_back(sdp.substr(start));
             break;
         }
 
-        lines.push_back(sdp.substr(start, end - start));
-        start = end + (sdp[end] == '\r' && end + 1 < sdp.size() && sdp[end + 1] == '\n' ? 2 : 1);
+        const auto length = end > start && sdp[end - 1] == '\r' ? end - start - 1 : end - start;
+        lines.push_back(sdp.substr(start, length));
+        start = end + 1;
     }
 
     return lines;
@@ -56,135 +57,183 @@ bool StartsWithString(const std::string& value, const std::string& prefix)
 }
 
 
-int ParseIntegerAttribute(const std::string& sdp, const std::string& attribute, int fallback)
+bool ParseIntegerAttribute(const std::vector<std::string>& lines, const std::string& attribute,
+    std::uint32_t& value, bool mask)
 {
     const std::string prefix = "a=" + attribute + ":";
-    for (const auto& line : SplitSdpLines(sdp)) {
+    bool found = false;
+    for (const auto& line : lines) {
         if (!StartsWithString(line, prefix))
             continue;
-
-        const std::string raw = line.substr(prefix.size());
-        char* end = nullptr;
-        long value = 0;
-        if (raw.rfind("0x", 0) == 0 || raw.rfind("0X", 0) == 0)
-            value = std::strtol(raw.c_str() + 2, &end, 16);
-        else
-            value = std::strtol(raw.c_str(), &end, 10);
-
-        if (end != raw.c_str())
-            return static_cast<int>(value);
+        if (found)
+            return false;
+        found = true;
+        const auto raw = audio::trim(line.substr(prefix.size()));
+        if (mask && raw == "-1") {
+            value = UINT32_MAX;
+            continue;
+        }
+        const bool hex = mask && (raw.rfind("0x", 0) == 0 || raw.rfind("0X", 0) == 0);
+        const char* first = raw.data() + (hex ? 2 : 0);
+        const auto parsed = std::from_chars(first, raw.data() + raw.size(), value, hex ? 16 : 10);
+        if (first == raw.data() + raw.size() || parsed.ec != std::errc{} ||
+            parsed.ptr != raw.data() + raw.size())
+            return false;
     }
-    return fallback;
+    return true;
 }
 
-opennow::webrtc::RiInputCapabilities ParseRiInputCapabilities(const std::string& offer_sdp)
+bool ParseRiInputCapabilities(const std::string& offer_sdp, webrtc::RiInputCapabilities& result)
 {
-    opennow::webrtc::RiInputCapabilities caps;
-    const int threshold = ParseIntegerAttribute(offer_sdp, "ri.partialReliableThresholdMs", caps.partial_reliable_threshold_ms);
-    if (threshold > 0)
-        caps.partial_reliable_threshold_ms = std::max(1, std::min(5000, threshold));
-    caps.hid_device_mask = static_cast<uint32_t>(ParseIntegerAttribute(
-        offer_sdp, "ri.hidDeviceMask", static_cast<int>(caps.hid_device_mask)));
-    caps.partial_reliable_gamepad_mask = static_cast<uint32_t>(ParseIntegerAttribute(
-        offer_sdp, "ri.enablePartiallyReliableTransferGamepad", static_cast<int>(caps.partial_reliable_gamepad_mask)));
-    caps.partial_reliable_hid_mask = static_cast<uint32_t>(ParseIntegerAttribute(
-        offer_sdp, "ri.enablePartiallyReliableTransferHid", static_cast<int>(caps.partial_reliable_hid_mask)));
-    return caps;
+    if (offer_sdp.size() > 65536)
+        return false;
+    const auto lines = SplitSdpLines(offer_sdp);
+    webrtc::RiInputCapabilities caps;
+    std::uint32_t threshold = caps.partial_reliable_threshold_ms;
+    if (!ParseIntegerAttribute(lines, "ri.partialReliableThresholdMs", threshold, false) ||
+        !threshold || threshold > 65535 ||
+        !ParseIntegerAttribute(lines, "ri.hidDeviceMask", caps.hid_device_mask, true) ||
+        !ParseIntegerAttribute(lines, "ri.enablePartiallyReliableTransferGamepad", caps.partial_reliable_gamepad_mask, true))
+        return false;
+    caps.partial_reliable_threshold_ms = static_cast<int>(threshold);
+    caps.partial_reliable_hid_mask = caps.hid_device_mask;
+    if (!ParseIntegerAttribute(lines, "ri.enablePartiallyReliableTransferHid", caps.partial_reliable_hid_mask, true))
+        return false;
+    result = caps;
+    return true;
 }
 
-int ExtractRtpmapPayloadType(const std::string& line, const char* codec)
-{
-    constexpr const char* prefix = "a=rtpmap:";
-    if (!StartsWithString(line, prefix))
-        return 0;
-
-    const size_t pt_start = std::strlen(prefix);
-    const size_t space = line.find(' ', pt_start);
-    if (space == std::string::npos)
-        return 0;
-
-    const std::string codec_prefix = std::string(codec) + "/";
-    const std::string codec_value = line.substr(space + 1);
-    if (!StartsWithString(codec_value, codec_prefix))
-        return 0;
-
-    char* end = nullptr;
-    long pt = std::strtol(line.c_str() + pt_start, &end, 10);
-    if (pt <= 0 || pt > 127)
-        return 0;
-
-    return static_cast<int>(pt);
-}
-
-std::string FindFmtpForPayload(const std::vector<std::string>& lines, int payload_type)
-{
-    const std::string prefix = "a=fmtp:" + std::to_string(payload_type) + " ";
-    bool video=false;
-    for (const auto& line : lines) {
-        if(StartsWithString(line,"m="))video=StartsWithString(line,"m=video ");
-        if (video&&StartsWithString(line, prefix))
-            return line;
-    }
-    return "";
-}
-
-std::vector<std::string> FindRtcpFbForPayload(const std::vector<std::string>& lines, int payload_type)
-{
+struct VideoFormat {
+    int payload = -1;
+    std::string rtpmap;
+    std::string fmtp;
     std::vector<std::string> feedback;
-    const std::string prefix = "a=rtcp-fb:" + std::to_string(payload_type) + " ";
-    bool video=false;
-    for (const auto& line : lines) {
-        if(StartsWithString(line,"m="))video=StartsWithString(line,"m=video ");
-        if (video&&(line == prefix + "nack" || line == prefix + "nack pli"))
-            feedback.push_back(line);
-    }
-    return feedback;
-}
+};
 
-int SelectOfferH264PayloadType(const std::string& offer_sdp)
+VideoFormat SelectOfferVideoFormat(const std::vector<std::string>& lines, const StreamSettings& settings)
 {
-    const std::vector<std::string> lines = SplitSdpLines(offer_sdp);
-    std::vector<int> h264_payloads;
-    bool in_video = false;
-
+    std::array<std::string, 128> maps{}, params{};
+    std::array<bool, 128> mapped{}, parameterized{};
+    std::vector<unsigned> payloads;
+    std::vector<std::string> feedback;
+    bool in_video = false, session = true, session_can_send = true, can_send = true;
+    if (lines.size() > 2048)
+        return {};
     for (const auto& line : lines) {
-        if (StartsWithString(line, "m="))
-            in_video = StartsWithString(line, "m=video");
-
+        if (line.size() > 2048)
+            return {};
+        if (StartsWithString(line, "m=")) {
+            session = false;
+            in_video = StartsWithString(line, "m=video ");
+            if (!in_video)
+                continue;
+            std::vector<std::string> fields;
+            for (const auto& field : audio::split(line, ' '))
+                if (!field.empty()) fields.push_back(field);
+            unsigned port = 0;
+            if (fields.size() < 4 || !audio::integer(fields[1], port) || !port || port > 65535)
+                return {};
+            for (std::size_t i = 3; i < fields.size(); ++i) {
+                unsigned payload = 0;
+                if (!audio::integer(fields[i], payload) || payload > 127 ||
+                    std::find(payloads.begin(), payloads.end(), payload) != payloads.end())
+                    return {};
+                payloads.push_back(payload);
+            }
+            can_send = session_can_send;
+            continue;
+        }
+        if (line == "a=sendrecv" || line == "a=sendonly" || line == "a=recvonly" || line == "a=inactive") {
+            const bool sending = line == "a=sendrecv" || line == "a=sendonly";
+            if (session) session_can_send = sending;
+            if (in_video) can_send = sending;
+        }
         if (!in_video)
             continue;
-
-        int pt = ExtractRtpmapPayloadType(line, "H264");
-        if (pt > 0)
-            h264_payloads.push_back(pt);
+        if (StartsWithString(line, "a=rtcp-fb:")) {
+            feedback.push_back(line.substr(10));
+            continue;
+        }
+        const bool map = StartsWithString(line, "a=rtpmap:");
+        if (!map && !StartsWithString(line, "a=fmtp:"))
+            continue;
+        const auto start = map ? 9u : 7u;
+        const auto space = line.find_first_of(" \t", start);
+        unsigned payload = 0;
+        if (space == std::string::npos || !audio::integer(line.substr(start, space - start), payload) || payload > 127)
+            return {};
+        auto& seen = (map ? mapped : parameterized)[payload];
+        if (seen)
+            return {};
+        seen = true;
+        (map ? maps : params)[payload] = audio::trim(line.substr(space + 1));
     }
-
-    for (int pt : h264_payloads) {
-        const std::string fmtp = FindFmtpForPayload(lines, pt);
-        if (fmtp.find("packetization-mode=1") != std::string::npos)
-            return pt;
+    if (!can_send)
+        return {};
+    const bool hevc = settings.codec() == VideoCodec::hevc;
+    VideoFormat fallback;
+    for (const auto payload : payloads) {
+        const auto codec = audio::lower(maps[payload]);
+        if (hevc ? codec != "h265/90000" && codec != "hevc/90000" : codec != "h264/90000")
+            continue;
+        bool valid = true, profile_seen = false, don_seen = false, mode_seen = false;
+        unsigned packetization = 0;
+        for (const auto& item : audio::split(params[payload], ';')) {
+            const auto equal = item.find('=');
+            const auto key = audio::lower(audio::trim(item.substr(0, equal)));
+            if ((hevc && key != "profile-id" && key != "sprop-max-don-diff") || (!hevc && key != "packetization-mode"))
+                continue;
+            unsigned value = 0;
+            if (equal == std::string::npos || !audio::integer(audio::trim(item.substr(equal + 1)), value)) {
+                valid = false;
+                break;
+            }
+            if (key == "profile-id") {
+                valid = !profile_seen && value == (settings.tenBit() ? 2u : 1u);
+                profile_seen = true;
+            } else if (key == "sprop-max-don-diff") {
+                valid = !don_seen && value == 0;
+                don_seen = true;
+            } else {
+                valid = !mode_seen && value <= 1;
+                packetization = value;
+                mode_seen = true;
+            }
+            if (!valid)
+                break;
+        }
+        if (!valid)
+            continue;
+        VideoFormat format;
+        format.payload = static_cast<int>(payload);
+        const auto pt = std::to_string(payload);
+        format.rtpmap = "a=rtpmap:" + pt + (hevc ? " H265/90000" : " H264/90000");
+        auto fmtp = params[payload];
+        if (hevc && !profile_seen) {
+            if (fmtp.empty())
+                fmtp = "profile-id=" + std::to_string(settings.tenBit() ? 2 : 1) + ";level-id=156;sprop-max-don-diff=0";
+            else
+                fmtp += ";profile-id=" + std::to_string(settings.tenBit() ? 2 : 1);
+        }
+        if (!fmtp.empty()) format.fmtp = "a=fmtp:" + pt + " " + fmtp;
+        for (const auto& attribute : feedback) {
+            const auto space = attribute.find_first_of(" \t");
+            if (space == std::string::npos)
+                continue;
+            const auto source = attribute.substr(0, space);
+            const auto type = audio::trim(attribute.substr(space + 1));
+            if ((source == pt || source == "*") && (type == "nack" || type == "nack pli")) {
+                const auto selected = "a=rtcp-fb:" + pt + " " + type;
+                if (std::find(format.feedback.begin(), format.feedback.end(), selected) == format.feedback.end())
+                    format.feedback.push_back(selected);
+            }
+        }
+        if (hevc || packetization == 1)
+            return format;
+        if (fallback.payload < 0)
+            fallback = format;
     }
-
-    return h264_payloads.empty() ? 0 : h264_payloads.front();
-}
-
-int SelectOfferHevcPayloadType(const std::string& offer_sdp,bool tenBit)
-{
-    const auto lines=SplitSdpLines(offer_sdp);bool video=false;
-    for(const auto& line:lines){
-        if(StartsWithString(line,"m="))video=StartsWithString(line,"m=video");
-        if(!video)continue;
-        int pt=ExtractRtpmapPayloadType(line,"H265");
-        if(!pt)pt=ExtractRtpmapPayloadType(line,"HEVC");
-        if(!pt)continue;
-        const auto fmtp=FindFmtpForPayload(lines,pt);
-        const auto don=fmtp.find("sprop-max-don-diff=");
-        if(don!=std::string::npos&&std::strtol(fmtp.c_str()+don+19,nullptr,10)!=0)continue;
-        const auto profile=fmtp.find("profile-id=");
-        if(profile!=std::string::npos&&std::strtol(fmtp.c_str()+profile+11,nullptr,10)!=(tenBit?2:1))continue;
-        return pt;
-    }
-    return 0;
+    return fallback;
 }
 
 int ExtractOfferMediaPort(const std::string& offer_sdp, const char* media_name)
@@ -353,16 +402,11 @@ std::string AdaptAnswerSdpToOffer(
     const std::string& offer_sdp,
     const opennow::StreamSettings& settings,const audio::Format* selectedAudio)
 {
-    if(CountSdpLinesWithPrefix(offer_sdp,"m=video ")!=1||
+    if(offer_sdp.size()>65536||answer_sdp.size()>65536||CountSdpLinesWithPrefix(offer_sdp,"m=video ")!=1||
        CountSdpLinesWithPrefix(answer_sdp,"m=video ")!=1)return {};
-    const bool hevc=settings.codec()==VideoCodec::hevc;
-    const int h264_payload_type = hevc?SelectOfferHevcPayloadType(offer_sdp,settings.tenBit()):SelectOfferH264PayloadType(offer_sdp);
-    if(!h264_payload_type)return {};
     const std::vector<std::string> offer_lines = SplitSdpLines(offer_sdp);
-    std::string offer_h264_fmtp = FindFmtpForPayload(offer_lines, h264_payload_type);
-    if(hevc&&!offer_h264_fmtp.empty()&&offer_h264_fmtp.find("profile-id=")==std::string::npos)
-        offer_h264_fmtp+=";profile-id="+std::to_string(settings.tenBit()?2:1);
-    const std::vector<std::string> offer_h264_feedback = FindRtcpFbForPayload(offer_lines, h264_payload_type);
+    const auto video_format=SelectOfferVideoFormat(offer_lines,settings);
+    if(video_format.payload<0)return {};
     const bool offerHasAudio=CountSdpLinesWithPrefix(offer_sdp,"m=audio ")!=0;
     const auto audioFormat=selectedAudio?*selectedAudio:audio::selectFormat(offer_sdp,2);
     if(offerHasAudio&&!audio::validFormat(audioFormat))return {};
@@ -371,23 +415,32 @@ std::string AdaptAnswerSdpToOffer(
     bool in_video = false;
     bool in_audio = false;
     bool video_bitrate_added = false;
-    bool video_feedback_added = false;
+    std::size_t video_start = 0;
     unsigned audioSections=0;
     const auto appendAudio=[&]{
         out.push_back(audioFormat.rtpmap);
         out.push_back("a=fmtp:"+std::to_string(audioFormat.payload)+" "+audioFormat.fmtp);
         if(audioFormat.redPayload>=0){out.push_back(audioFormat.redRtpmap);out.push_back(audioFormat.redFmtp);}
+        out.push_back("a=recvonly");
     };
-
-    const std::string payload = std::to_string(h264_payload_type);
+    const auto appendVideo=[&]{
+        if(!video_bitrate_added)
+            out.insert(out.begin()+static_cast<std::ptrdiff_t>(video_start+1),"b=AS:"+std::to_string(settings.bitrate_kbps));
+        out.push_back(video_format.rtpmap);
+        if(!video_format.fmtp.empty())out.push_back(video_format.fmtp);
+        out.insert(out.end(),video_format.feedback.begin(),video_format.feedback.end());
+        out.push_back("a=recvonly");
+    };
 
     for (const auto& line : lines) {
         if (StartsWithString(line, "m=")) {
             if(in_audio)appendAudio();
-            in_video = StartsWithString(line, "m=video");
-            in_audio = StartsWithString(line, "m=audio");
+            if(in_video)appendVideo();
+            in_video = StartsWithString(line, "m=video ");
+            in_audio = StartsWithString(line, "m=audio ");
             if (in_video) {
-                out.push_back("m=video 9 UDP/TLS/RTP/SAVPF " + payload);
+                video_start=out.size();
+                out.push_back("m=video 9 UDP/TLS/RTP/SAVPF " + std::to_string(video_format.payload));
                 continue;
             } else if (in_audio) {
                 if(!offerHasAudio||++audioSections>1)return {};
@@ -405,59 +458,23 @@ std::string AdaptAnswerSdpToOffer(
 
         if (in_video && StartsWithString(line, "c=IN ")) {
             out.push_back(line);
-            out.push_back("b=AS:" + std::to_string(settings.bitrate_kbps));
+            if(!video_bitrate_added)out.push_back("b=AS:" + std::to_string(settings.bitrate_kbps));
             video_bitrate_added = true;
             continue;
         }
 
-        if (in_video && StartsWithString(line, "a=rtcp-fb:96")) {
-            if (!video_feedback_added) {
-                if (!offer_h264_feedback.empty()) {
-                    for (const auto& feedback : offer_h264_feedback)
-                        out.push_back(feedback);
-                } else {
-                    out.push_back("a=rtcp-fb:" + payload + " nack");
-                    out.push_back("a=rtcp-fb:" + payload + " nack pli");
-                }
-                video_feedback_added = true;
-            }
+        if (in_video && (StartsWithString(line,"b=AS:")||StartsWithString(line,"b=TIAS:")||
+            StartsWithString(line,"a=rtcp-fb:")||StartsWithString(line,"a=fmtp:")||StartsWithString(line,"a=rtpmap:")||
+            StartsWithString(line,"a=ssrc:")||StartsWithString(line,"a=ssrc-group:")))
             continue;
-        }
-
-        if (in_video && StartsWithString(line, "a=fmtp:96")) {
-            if (!offer_h264_fmtp.empty())
-                out.push_back(offer_h264_fmtp);
-            else
-                out.push_back("a=fmtp:" + payload + (hevc?" profile-id=2;level-id=156;sprop-max-don-diff=0":" level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"));
+        if ((in_video||in_audio)&&(line=="a=sendrecv"||line=="a=sendonly"||line=="a=recvonly"||line=="a=inactive"))
             continue;
-        }
-
-        if (in_video && StartsWithString(line, "a=rtpmap:96")) {
-            out.push_back("a=rtpmap:" + payload + (hevc?" H265/90000":" H264/90000"));
-            continue;
-        }
-
-        if (in_video && StartsWithString(line, "a=ssrc:"))
-            continue;
-
-        if (in_video && StartsWithString(line, "a=sendrecv")) {
-            out.push_back("a=recvonly");
-            continue;
-        }
 
         out.push_back(line);
     }
     if(in_audio)appendAudio();
+    if(in_video)appendVideo();
     if(offerHasAudio&&!audioSections)return {};
-
-    if (!video_bitrate_added) {
-        for (size_t i = 0; i < out.size(); ++i) {
-            if (StartsWithString(out[i], "m=video")) {
-                out.insert(out.begin() + static_cast<long>(i + 1), "b=AS:" + std::to_string(settings.bitrate_kbps));
-                break;
-            }
-        }
-    }
 
     return AlignAnswerSdpToOffer(JoinSdpLines(out), offer_sdp);
 }

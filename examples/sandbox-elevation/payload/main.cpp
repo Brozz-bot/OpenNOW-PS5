@@ -25,7 +25,10 @@ using elevation::Status;
 using elevation::wire::Kind;
 using elevation::wire::Message;
 
-constexpr char target_title_id[] = "PPSA99790";
+#ifndef ELEVATION_TARGET_TITLE_ID
+#define ELEVATION_TARGET_TITLE_ID "PPSA99790"
+#endif
+constexpr char target_title_id[] = ELEVATION_TARGET_TITLE_ID;
 constexpr std::uint64_t system_auth_id = UINT64_C(0x4801000000000013);
 
 struct AppInfo

@@ -262,6 +262,10 @@ done
 
 root_files=()
 [[ -z ${APP_ROOT_FILES:-} ]] || read -r -a root_files <<< "$APP_ROOT_FILES"
+if [[ $title_id == PPSA99082 && $app_source_dir == src ]]; then
+    bash "$root/tools/build-forwarder-helper.sh"
+    root_files+=(build/forwarder/opennow-forwarder-elevator.elf)
+fi
 for source in "${root_files[@]}"; do
     [[ $source =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && -f $root/$source ]] || {
         echo "invalid application root file: $source" >&2

@@ -19,6 +19,37 @@ OpenNOW PS5 is an independent native adaptation made possible by **OpenCloudGami
 | [FFmpeg](https://ffmpeg.org/) | Developer-supplied selection-audio preparation |
 | [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) | Directory-style deployment and hardware validation |
 
+## PS5 title forwarders
+
+- [PS5 Forwarder Format](https://github.com/heydemoura/ps5-forwarder-format),
+  Copyright (C) 2026 heydemoura, GPL-3.0-or-later, revision
+  `22e8762ad7dbd01e18bd8c0e95f86461fdf8aaf4`. Unmodified corresponding
+  format, library, forwarder, launcher, schema, registry, and test source is
+  retained in `vendor/ps5-forwarder-format` with its license. The exact shared
+  `template/eboot.bin` and `template/sce_module/libc.prx` are intentionally
+  vendored under `assets/forwarder-template`. The forwarder contains the
+  standard launcher, whose standalone SHA-256 is also recorded in
+  `upstream-lock.json`. `libc.prx` is the clean-room boilerplate runtime by
+  BlackBearReloaded, built from the source already retained in this repository;
+  its hash matches the generated runtime described below. The app packages the
+  format's GPL license with these assets.
+- [PS5 Forwarder Manager](https://github.com/heydemoura/ps5-forwarder-manager),
+  Copyright (C) 2026 heydemoura, GPL-3.0-or-later, revision
+  `1fce14a7519d963a18f4b048a08bcea4cef59d0d`. `src/forwarder/image.cpp`
+  adapts its `src/fwd/image.cpp` mode-6 BC7 and DX10 DDS encoder to a bounded,
+  streaming output sink. The upstream file's SHA-256 is
+  `4bf949c96ccc527ec531cf6eab3ec853cccec5dcc8a06ca7c9329e41c75cbbf8`.
+  Its credit to `https://ps5-forwarder.mph.am`, bundled module 1212, is
+  preserved. PNG streaming is original project code. Game artwork belongs to
+  its publishers, is fetched from GFN at runtime, and is not redistributed.
+
+The unmodified template inputs have these SHA-256 pins:
+
+| File | SHA-256 |
+| --- | --- |
+| `eboot.bin` | `3944ed19d258d348be0dda445959740919be4f727d6e6766e783b8a01c298331` |
+| `sce_module/libc.prx` | `e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036` |
+
 ## Native build dependencies
 
 The application build uses LLVM/Clang/lld, zlib 1.3.2, and the public
@@ -134,6 +165,7 @@ The original runtime boilerplate source archive used here has SHA-256 `133b4ec9d
 
 ## Streaming additions (0.2)
 
+- OpenNOW native/Qt (`60ce69a07bf94ba484af7406d386ccb28e5a13e6`, MIT, Copyright (c) 2025 Zortos; retained full notice: `assets/licenses/OpenNOW-Android.txt`): CloudMatch allocation, discovery, claim, progress and cleanup behavior from `native/opennow-core/src/cloudmatch.rs`; authentication renewal and identity checks from `gfn.rs`; bounded stream settings from `settings.rs`; WebRTC signaling, SDP and input from `native/opennow-streamer/crates/opennow-streamer-{core,transport}/src/webrtc`; native server-control/haptic parsing and truthful QoS encoding from transport `nvst_server_control.rs`, `nvst_haptics.rs`, `nvst_control.rs` and `nvst.rs`; controller tuning and motor intensity from `opennow-qt/src/input/ControllerInput.cpp`. Local C++ adaptations retain the PS5 WebRTC transport and qualified hardware pipeline. `OpenNOW-backend-reference` records this audit separately from historical references. See [backend parity](docs/BACKEND_PARITY.md) for the exact protocol boundaries and remaining acceptance work.
 - OpenNOW-Switch (MIT, pinned in `upstream-lock.json`): WebSocket transport/handshake/queue, SDP/NVST negotiation helpers and associated protocol tests; retained notice in `licenses/OpenNOW-Switch.txt`.
 - OpenNOW v0.5.5 (`44b80f207e84a2e4a6cda58205aa54e67aacb56f`, GPL-3.0-or-later): additional WebSocket session lifecycle and mapped ICE endpoint reference for development build `00.002.036`. The `OpenNOW-WebRTC-reference` entry pins this transport-compatible revision separately from the newer desktop client's native RTSPS implementation.
 - OpenNOW Android native (`bb3200644fa2b6c7e8f6a1064a45f36759537d08`, MIT, Copyright (c) 2025 Zortos; full notice: `assets/licenses/OpenNOW-Android.txt`): signaling request headers, relative WebSocket endpoint mapping, binary signaling delivery, and public/private ICE endpoint handling for development build `00.002.038`; keyboard, relative mouse and mouse button wire formats, the US-layout virtual-key and scan-code table, and the 32 ms synthetic key hold (`StreamInputEncoder.kt`, `StreamKeyboardText.kt`) for development build `00.002.042`. This is the original adaptation reference; the current reviewed revision is pinned as `OpenNOW-Android-native` in `upstream-lock.json`.

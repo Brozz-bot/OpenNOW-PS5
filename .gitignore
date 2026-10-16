@@ -32,6 +32,7 @@ dist/
 *.sprx
 *.prx
 *.pkg
+!assets/forwarder-template/sce_module/libc.prx
 
 # Local NVIDIA authentication cache (never package or commit).
 account.bin

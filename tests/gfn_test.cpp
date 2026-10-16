@@ -2,6 +2,7 @@
 #include "gfn.hpp"
 #include <cassert>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -18,6 +19,17 @@ struct Fake {
     }
 };
 const char* challenge=R"({"device_code":"device&code","user_code":"TEST-CODE","verification_uri":"https://static-login.nvidia.com/service/gfn/pin","verification_uri_complete":"https://static-login.nvidia.com/service/gfn/pin?user_code=TEST-CODE","expires_in":60,"interval":5})";
+std::string jwt(const std::string& payload) {
+    constexpr const char* alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string result = "e30.";
+    unsigned bits = 0, count = 0;
+    for (unsigned char byte : payload) {
+        bits = (bits << 8) | byte; count += 8;
+        while (count >= 6) { count -= 6; result += alphabet[(bits >> count) & 63]; }
+    }
+    if (count) result += alphabet[(bits << (6-count)) & 63];
+    return result + ".signature";
+}
 int main() {
     using opennow::State;
     char out[64]; assert(opennow::encodeForm("a& b+",out,sizeof(out))); assert(std::strcmp(out,"a%26%20b%2B")==0);
@@ -31,7 +43,9 @@ int main() {
         login.tick(105); assert(f.calls==2); login.tick(110); assert(f.calls==3);
         login.tick(115); assert(f.calls==3); login.tick(120); assert(f.calls==5);
         assert(login.view().state==State::authenticated && login.view().profileVerified);
+        assert(!std::strcmp(login.userId(),"test-user"));
         assert(login.view().code[0]==0); login.cancel(); assert(login.view().state==State::cancelled);
+        assert(!*login.userId());
     }
     {
         Fake f{{{200,challenge}}}; opennow::Login login(Fake::request,&f);
@@ -54,6 +68,40 @@ int main() {
     }
     {
         Fake f{{{200,std::string(challenge)+" trailing"}}};opennow::Login login(Fake::request,&f);login.begin("id",0);assert(login.view().state==State::failed);
+    }
+    for (auto expiry : {0,1}) {
+        const auto id = jwt("{\"exp\":" + std::to_string(expiry) + "}");
+        Fake f{{{200,challenge},{200,"{\"access_token\":\"test-token\",\"id_token\":\""+id+"\",\"expires_in\":180}"},
+            {200,R"({"sub":"test-user"})"}}};
+        opennow::Login login(Fake::request,&f); login.begin("id",0); login.tick(5);
+        assert(login.view().state == State::requesting && !*login.cloudToken());
+    }
+    {
+        const auto id = jwt("{\"exp\":" + std::to_string(std::time(nullptr)+400) + "}");
+        const std::string renewed = R"({"access_token":"test-token","expires_in":180})";
+        Fake f{{{200,challenge},{200,"{\"access_token\":\"test-token\",\"id_token\":\""+id+"\",\"refresh_token\":\"renewal\",\"expires_in\":180}"},
+            {200,R"({"sub":"test-user"})"},{200,renewed},{200,R"({"sub":"test-user"})"},
+            {200,renewed},{200,R"({"sub":"test-user"})"}}};
+        opennow::Login login(Fake::request,&f); login.begin("id",0); login.tick(5);
+        login.tick(125); assert(!std::strcmp(login.cloudToken(),id.c_str()));
+        login.tick(410); assert(login.view().state == State::requesting && !*login.cloudToken());
+        assert(login.view().profileVerified);
+    }
+    {
+        const auto id = jwt(R"({"exp":4102444800})");
+        Fake f{{{200,challenge},{200,"{\"access_token\":\"test-token\",\"id_token\":\""+id+"\",\"refresh_token\":\"renewal\",\"expires_in\":10}"},
+            {200,R"({"sub":"test-user"})"},{200,R"({"access_token":"test-token","expires_in":180})"},
+            {200,R"({"sub":"test-user"})"}}};
+        opennow::Login login(Fake::request,&f); login.begin("id",0); login.tick(5);
+        login.tick(9); assert(f.calls == 3);
+        login.tick(10); assert(f.calls == 5 && !std::strcmp(login.cloudToken(),id.c_str()));
+    }
+    for (const auto& id : {jwt(R"({"exp":"1"})"),jwt(R"({"exp":-1})"),jwt(R"({"exp":1.5})"),
+        jwt(R"({"exp":1})")+".extra",std::string("synthetic-token")}) {
+        Fake f{{{200,challenge},{200,"{\"access_token\":\"test-token\",\"id_token\":\""+id+"\",\"expires_in\":180}"},
+            {200,R"({"sub":"test-user"})"}}};
+        opennow::Login login(Fake::request,&f); login.begin("id",0); login.tick(5);
+        assert(login.view().state == State::authenticated && !std::strcmp(login.cloudToken(),id.c_str()));
     }
     std::puts("GFN authorization regression tests passed");
 }
