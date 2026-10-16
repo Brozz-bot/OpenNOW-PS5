@@ -20,11 +20,12 @@ using std::string_view;
 constexpr Color rgb(unsigned hex) {
     return static_cast<Color>(0xff000000U|((hex&0xffU)<<16)|(hex&0xff00U)|((hex>>16)&0xffU));
 }
-constexpr Color ground=rgb(0x0D1217), surface=rgb(0x151C23), raised=rgb(0x1E272F), hairline=rgb(0x2A343D);
-constexpr Color ink=rgb(0xF4F7FF), muted=rgb(0xA9B3BF), dim=rgb(0x76818D);
-constexpr Color mint=rgb(0x56E69E), mintInk=rgb(0x062A18), coral=rgb(0xFF8A80), amber=rgb(0xFFD166);
-constexpr Color white=rgb(0xFFFFFF);
-constexpr float left=96, right=1824, width=1728, hintY=996;
+constexpr Color shell=rgb(0x0B0F1A), face=rgb(0xFFFFFF), faceText=rgb(0x111827), accent=rgb(0x7FD4FF);
+constexpr Color muted=rgb(0xA7A9AD), dim=rgb(0x6B6F79), black=rgb(0x000000);
+constexpr Color mint=rgb(0x6EE7B7), violet=rgb(0xA78BFA), yellow=rgb(0xFFD166), coral=rgb(0xFF8A80);
+constexpr Color sheetFill=rgb(0x111522);
+constexpr unsigned glassAlpha=184, strongAlpha=240, seamAlpha=36;
+constexpr float hintY=984;
 
 Color mix(Color a, Color b, float t) {
     unsigned out=0xff000000U;
@@ -34,6 +35,7 @@ Color mix(Color a, Color b, float t) {
     }
     return static_cast<Color>(out);
 }
+unsigned alphaOf(float opacity) {return static_cast<unsigned>(std::clamp(opacity,0.0f,1.0f)*255+0.5f);}
 
 float baselineIn(Face face, float size, float top, float lineHeight) {
     return top+(lineHeight-(ascent(face,size)+descent(face,size)))/2+ascent(face,size);
@@ -41,13 +43,37 @@ float baselineIn(Face face, float size, float top, float lineHeight) {
 float label(Canvas& c, Face face, float size, float x, float centerY, string_view text, Color color, float tracking=0, unsigned alpha=255) {
     return drawText(c,face,size,x,baselineIn(face,size,centerY-size*0.7f,size*1.4f),text,color,tracking,alpha);
 }
+float fitted(Canvas& c, Face face, float size, float x, float centerY, string_view text, float maxWidth, Color color, float tracking=0) {
+    return drawFitted(c,face,size,x,baselineIn(face,size,centerY-size*0.7f,size*1.4f),text,maxWidth,color,tracking);
+}
 float labelRight(Canvas& c, Face face, float size, float rightX, float centerY, string_view text, Color color, float tracking=0) {
     const float w=textWidth(face,size,text,tracking);
     label(c,face,size,rightX-w,centerY,text,color,tracking);
     return w;
 }
+float labelCenter(Canvas& c, Face face, float size, float centerX, float centerY, string_view text, Color color, float tracking=0) {
+    const float w=textWidth(face,size,text,tracking);
+    label(c,face,size,centerX-w/2,centerY,text,color,tracking);
+    return w;
+}
+void upper(char* text) {for(char* p=text;*p;++p)if(*p>='a'&&*p<='z')*p=static_cast<char>(*p-32);}
+void eyebrow(Canvas& c, float x, float centerY, string_view text, Color color=muted, float size=14, float maxWidth=1600) {
+    char buffer[256];std::snprintf(buffer,sizeof(buffer),"%.*s",static_cast<int>(text.size()),text.data());upper(buffer);
+    fitted(c,Face::mono,size,x,centerY,buffer,maxWidth,color,0.12f);
+}
 
-struct Store { Color top, bottom; };
+void panel(Canvas& c, float x, float y, float w, float h, float radius, bool strong=false) {
+    c.roundRect(x,y,w,h,radius,shell,strong?strongAlpha:glassAlpha);
+    c.roundRectStroke(x,y,w,h,radius,1,face,seamAlpha);
+}
+void focusFrame(Canvas& c, float x, float y, float w, float h, float radius, unsigned halo=115) {
+    c.roundRectStroke(x-5,y-5,w+10,h+10,radius+5,5,accent,halo);
+    c.roundRectStroke(x,y,w,h,radius,3,face);
+}
+void rule(Canvas& c, float x, float y, float w) {c.roundRect(x,y,w,1,0,face,seamAlpha);}
+void dot(Canvas& c, float cx, float cy, Color color) {c.disc(cx,cy,4.5f,color);}
+
+struct StoreInfo { const char* key; const char* name; Color color; };
 bool contains(string_view haystack, string_view needle) {
     for(std::size_t i=0;i+needle.size()<=haystack.size();++i) {
         bool same=true;
@@ -59,118 +85,528 @@ bool contains(string_view haystack, string_view needle) {
     }
     return false;
 }
-Store storeColors(string_view store) {
-    if(contains(store,"STEAM"))return {rgb(0x2E4058),rgb(0x141C27)};
-    if(contains(store,"XBOX")||contains(store,"MICROSOFT"))return {rgb(0x12703C),rgb(0x09301C)};
-    if(contains(store,"EPIC"))return {rgb(0x36363F),rgb(0x16161B)};
-    if(contains(store,"UBISOFT")||contains(store,"UPLAY"))return {rgb(0x3150B5),rgb(0x151E48)};
-    if(contains(store,"BATTLE")||contains(store,"BLIZZARD"))return {rgb(0x2A6DA0),rgb(0x112B42)};
-    if(contains(store,"GOG"))return {rgb(0x6A36C4),rgb(0x26124A)};
-    if(contains(store,"EA")||contains(store,"ORIGIN"))return {rgb(0x8A3A34),rgb(0x341613)};
-    return {rgb(0x2E3A44),rgb(0x151C23)};
+StoreInfo storeInfo(string_view store) {
+    if(contains(store,"STEAM"))return {"S","Steam",rgb(0x26364A)};
+    if(contains(store,"EPIC"))return {"E","Epic Games",rgb(0x1B1B1F)};
+    if(contains(store,"UBISOFT")||contains(store,"UPLAY"))return {"U","Ubisoft Connect",rgb(0x3A5BD9)};
+    if(contains(store,"BATTLE"))return {"B","Battle.net",rgb(0x2E7CB8)};
+    if(contains(store,"XBOX"))return {"X","Xbox",rgb(0x107C41)};
+    if(contains(store,"GOG"))return {"G","GOG",rgb(0x7B3FE4)};
+    if(store=="EA"||contains(store,"EA APP")||contains(store,"ORIGIN"))return {"EA","EA app",rgb(0x252A35)};
+    return {nullptr,nullptr,rgb(0x252A35)};
 }
-Color storeAccent(string_view store) {
-    if(contains(store,"STEAM"))return rgb(0x3B5675);
-    if(contains(store,"XBOX")||contains(store,"MICROSOFT"))return rgb(0x107C41);
-    if(contains(store,"EPIC"))return rgb(0x55555F);
-    if(contains(store,"UBISOFT")||contains(store,"UPLAY"))return rgb(0x3A5BD9);
-    if(contains(store,"BATTLE")||contains(store,"BLIZZARD"))return rgb(0x2E7CB8);
-    if(contains(store,"GOG"))return rgb(0x7B3FE4);
-    if(contains(store,"EA")||contains(store,"ORIGIN"))return rgb(0xB5483F);
-    return rgb(0x45525E);
+const char* storeName(const char* store) {const auto info=storeInfo(store);return info.name?info.name:store;}
+void storeMark(Canvas& c, float cx, float cy, float size, string_view store) {
+    const auto info=storeInfo(store);
+    c.disc(cx,cy,size/2,info.color);
+    c.ring(cx,cy,size/2-0.5f,1,face,46);
+    char letter[3]{};
+    if(info.key)std::snprintf(letter,sizeof(letter),"%s",info.key);
+    else if(!store.empty())letter[0]=static_cast<char>(store[0]>='a'&&store[0]<='z'?store[0]-32:store[0]);
+    const float s=std::round(size*(letter[1]?0.36f:0.42f));
+    labelCenter(c,Face::black,s,cx,cy,letter,face);
+}
+float storeChipWidth(const char* store, float markSize=30, float inset=5) {return inset+markSize+10+textWidth(Face::extrabold,16,storeName(store))+16;}
+float storeChip(Canvas& c, float x, float cy, const char* store, float markSize=30, float inset=5) {
+    const float w=storeChipWidth(store,markSize,inset), h=markSize+inset*2;
+    c.roundRect(x,cy-h/2,w,h,h/2,face,18);
+    c.roundRectStroke(x,cy-h/2,w,h,h/2,1,face,seamAlpha);
+    storeMark(c,x+inset+markSize/2,cy,markSize,store);
+    label(c,Face::extrabold,16,x+inset+markSize+10,cy,storeName(store),face);
+    return w;
 }
 
-enum class Glyph { cross, circle, square, triangle, dpad, options, touch, check, stick };
-void glyph(Canvas& c, Glyph kind, float cx, float cy, Color color, float size=26) {
-    const float s=size/24, x=cx-12*s, y=cy-12*s, t=2.6f*s;
-    switch(kind) {
-    case Glyph::cross: c.line(x+6.5f*s,y+6.5f*s,x+17.5f*s,y+17.5f*s,t,color);c.line(x+17.5f*s,y+6.5f*s,x+6.5f*s,y+17.5f*s,t,color);break;
-    case Glyph::circle: c.ring(cx,cy,6.6f*s,t,color);break;
-    case Glyph::square: c.roundRectStroke(x+6*s-t/2,y+6*s-t/2,12*s+t,12*s+t,1.4f*s+t/2,t,color);break;
+enum class Glyph { none, cross, circle, square, triangle, dpad, options, touchpad, stick, l1, r1, l2, r2, r3 };
+bool badge(Glyph g) {return g==Glyph::l1||g==Glyph::r1||g==Glyph::l2||g==Glyph::r2||g==Glyph::r3;}
+float glyphWidth(Glyph g, float size=30) {return g==Glyph::none?0:g==Glyph::touchpad?size*1.45f:badge(g)?size*1.35f:size;}
+float glyph(Canvas& c, Glyph g, float x, float cy, float size=30, Color fill=face, Color ink=faceText) {
+    const float w=glyphWidth(g,size), cx=x+w/2, s=size, t=std::max(2.0f,s*0.085f);
+    if(g==Glyph::none)return 0;
+    if(badge(g)) {
+        const float h=s*0.82f;
+        c.roundRect(x,cy-h/2,w,h,std::min(7.0f,h/2),fill);
+        const char* text=g==Glyph::l1?"L1":g==Glyph::r1?"R1":g==Glyph::l2?"L2":g==Glyph::r2?"R2":"R3";
+        labelCenter(c,Face::black,std::round(s*0.43f),cx,cy,text,ink);
+        return w;
+    }
+    if(g==Glyph::touchpad) {
+        const float h=s*0.82f;
+        c.roundRect(x,cy-h/2,w,h,std::min(7.0f,h/2),fill);
+        c.roundRectStroke(x+w*0.2f,cy-h*0.24f,w*0.6f,h*0.48f,3,t*0.8f,ink);
+        return w;
+    }
+    c.disc(cx,cy,s/2,fill);
+    switch(g) {
+    case Glyph::cross: {const float a=s*0.2f;c.line(cx-a,cy-a,cx+a,cy+a,t,ink);c.line(cx+a,cy-a,cx-a,cy+a,t,ink);break;}
+    case Glyph::circle: c.ring(cx,cy,s*0.23f,t,ink);break;
+    case Glyph::square: {const float a=s*0.42f;c.roundRectStroke(cx-a/2,cy-a/2,a,a,s*0.05f,t,ink);break;}
     case Glyph::triangle: {
-        const float p[]={x+12*s,y+5.2f*s,x+19*s,y+17.6f*s,x+5*s,y+17.6f*s};
-        for(int i=0;i<3;++i)c.line(p[i*2],p[i*2+1],p[(i+1)%3*2],p[(i+1)%3*2+1],t,color);
+        const float p[]={cx,cy-s*0.22f,cx+s*0.23f,cy+s*0.17f,cx-s*0.23f,cy+s*0.17f};
+        for(int i=0;i<3;++i)c.line(p[i*2],p[i*2+1],p[(i+1)%3*2],p[(i+1)%3*2+1],t,ink);
         break;
     }
+    case Glyph::options: for(float row:{-0.15f,0.0f,0.15f})c.line(cx-s*0.2f,cy+row*s,cx+s*0.2f,cy+row*s,t*0.9f,ink);break;
     case Glyph::dpad: {
-        const float d=28.0f/24, ox=cx-12*d, oy=cy-12*d;
-        const float p[]={9,3,15,3,15,9,21,9,21,15,15,15,15,21,9,21,9,15,3,15,3,9,9,9};
-        for(int i=0;i<12;++i){const int j=(i+1)%12;c.line(ox+p[i*2]*d,oy+p[i*2+1]*d,ox+p[j*2]*d,oy+p[j*2+1]*d,2*d,color);}
+        const float a=s*0.13f, b=s*0.33f;
+        c.roundRect(cx-a,cy-b,2*a,2*b,a*0.6f,ink);c.roundRect(cx-b,cy-a,2*b,2*a,a*0.6f,ink);
+        c.disc(cx,cy,a*0.55f,fill);
         break;
     }
-    case Glyph::options: for(float row:{7.0f,12.0f,17.0f})c.line(x+5*s,y+row*s,x+19*s,y+row*s,2.4f*s,color);break;
-    case Glyph::touch: c.roundRectStroke(cx-15,cy-8,30,16,5,2.4f,color);break;
-    case Glyph::stick: c.ring(cx,cy,8.5f*s,t,color);c.disc(cx,cy,3*s,color);break;
-    case Glyph::check: c.line(x+5*s,y+12.5f*s,x+9.5f*s,y+17*s,3*s,color);c.line(x+9.5f*s,y+17*s,x+19*s,y+7.5f*s,3*s,color);break;
+    case Glyph::stick: c.ring(cx,cy,s*0.27f,t,ink);c.disc(cx,cy,s*0.1f,ink);break;
+    default: break;
     }
+    return w;
 }
-float well(Canvas& c, Glyph kind, float x, float cy, Color fill=raised, Color color=ink) {
-    c.disc(x+22,cy,22,fill);glyph(c,kind,x+22,cy,color);return 44;
-}
-float pillWidth(string_view text) {return textWidth(Face::black,18,text)+24;}
-float pill(Canvas& c, string_view text, float x, float cy, Color fill=raised, Color color=ink) {
-    const float w=pillWidth(text);
-    c.roundRect(x,cy-20,w,40,10,fill);label(c,Face::black,18,x+12,cy,text,color);return w;
-}
-float optionsPill(Canvas& c, float x, float cy, Color fill=raised, Color color=ink) {
-    c.roundRect(x,cy-20,48,40,10,fill);glyph(c,Glyph::options,x+24,cy,color,24);return 48;
-}
-float touchPill(Canvas& c, float x, float cy) {c.roundRect(x,cy-22,58,44,10,raised);glyph(c,Glyph::touch,x+29,cy,ink);return 58;}
 
-enum class HintKind { glyph, pill, optionsMint, chord, hold, combo };
-struct Hint { HintKind kind; Glyph icon; const char* key; const char* text; };
-constexpr float hintLabel=24;
-float hintWidth(const Hint& h) {
-    const float text=textWidth(Face::bold,hintLabel,h.text);
-    switch(h.kind) {
-    case HintKind::glyph: return 44+12+text;
-    case HintKind::pill: return pillWidth(h.key)+12+text;
-    case HintKind::optionsMint: return 48+12+text;
-    case HintKind::chord: return pillWidth("L1")+8+pillWidth("R1")+12+text;
-    case HintKind::hold: return textWidth(Face::bold,22,"Hold")+10+48+10+textWidth(Face::black,20,"+")+10+58+12+text;
-    case HintKind::combo: return 48+10+textWidth(Face::black,20,"+")+10+44+12+text;
-    }
-    return text;
+struct Hint { Glyph glyph; const char* text; Glyph second=Glyph::none; const char* prefix=nullptr; Color ink=face; const char* join="+"; };
+constexpr float hintSize=30, hintLabel=17;
+float hintWidth(const Hint& h, float size=hintSize, float text=hintLabel) {
+    float w=glyphWidth(h.glyph,size)+10+textWidth(Face::extrabold,text,h.text);
+    if(h.prefix)w+=textWidth(Face::extrabold,text,h.prefix)+8;
+    if(h.second!=Glyph::none)w+=6+textWidth(Face::black,text,h.join)+6+glyphWidth(h.second,size);
+    return w;
 }
-void drawHint(Canvas& c, const Hint& h, float x, float cy=hintY) {
-    switch(h.kind) {
-    case HintKind::glyph: x+=well(c,h.icon,x,cy)+12;break;
-    case HintKind::pill: x+=pill(c,h.key,x,cy)+12;break;
-    case HintKind::optionsMint: x+=optionsPill(c,x,cy,mint,mintInk)+12;break;
-    case HintKind::chord:
-        x+=pill(c,"L1",x,cy)+8;x+=pill(c,"R1",x,cy)+12;break;
-    case HintKind::hold:
-        x+=label(c,Face::bold,22,x,cy,"Hold",muted)+10;x+=optionsPill(c,x,cy)+10;
-        x+=label(c,Face::black,20,x,cy,"+",dim)+10;x+=touchPill(c,x,cy)+12;break;
-    case HintKind::combo:
-        x+=optionsPill(c,x,cy)+10;x+=label(c,Face::black,20,x,cy,"+",dim)+10;x+=well(c,h.icon,x,cy)+12;break;
-    }
-    label(c,Face::bold,hintLabel,x,cy,h.text,ink);
+float drawHint(Canvas& c, const Hint& h, float x, float cy, float size=hintSize, float text=hintLabel) {
+    const float start=x;
+    if(h.prefix)x+=label(c,Face::extrabold,text,x,cy,h.prefix,muted)+8;
+    x+=glyph(c,h.glyph,x,cy,size);
+    if(h.second!=Glyph::none){x+=6;x+=label(c,Face::black,text,x,cy,h.join,muted)+6;x+=glyph(c,h.second,x,cy,size);}
+    x+=10;
+    x+=label(c,Face::extrabold,text,x,cy,h.text,h.ink);
+    return x-start;
 }
-void hints(Canvas& c, const Hint* leftHints, unsigned leftCount, const Hint* rightHints, unsigned rightCount) {
-    float x=left;
-    for(unsigned i=0;i<leftCount;++i){drawHint(c,leftHints[i],x);x+=hintWidth(leftHints[i])+40;}
-    float total=0;
-    for(unsigned i=0;i<rightCount;++i)total+=hintWidth(rightHints[i])+(i?40:0);
-    x=right-total;
-    for(unsigned i=0;i<rightCount;++i){drawHint(c,rightHints[i],x);x+=hintWidth(rightHints[i])+40;}
+float hintRowWidth(const Hint* items, unsigned count, float gap=22) {
+    float w=0;for(unsigned i=0;i<count;++i)w+=hintWidth(items[i])+(i?gap:0);return w;
 }
-constexpr Hint closeApp{HintKind::glyph,Glyph::circle,nullptr,"Close app"};
-constexpr Hint sections{HintKind::chord,Glyph::cross,nullptr,"Sections"};
-constexpr Hint back{HintKind::glyph,Glyph::circle,nullptr,"Back"};
+void hintRow(Canvas& c, const Hint* items, unsigned count, float x, float cy=hintY, float gap=22) {
+    for(unsigned i=0;i<count;++i)x+=drawHint(c,items[i],x,cy)+gap;
+}
 
-void logo(Canvas& c, float x, float y) {
-    c.ring(x+22,y+22,16,8,mint);
-    const float play[]={x+18,y+14.5f,x+29,y+22,x+18,y+29.5f};
-    c.polygon(play,3,mint);
-    c.line(x+38,y+38,x+38,y+7,8,ink);c.line(x+38,y+7,x+56,y+38,8,ink);c.line(x+56,y+38,x+56,y+7,8,ink);
+enum class NavIcon { library, store, settings };
+void navIcon(Canvas& c, NavIcon icon, float cx, float cy, bool onLight) {
+    switch(icon) {
+    case NavIcon::library: {
+        const Color tone=onLight?rgb(0x12638C):accent;
+        for(int i=0;i<4;++i)c.roundRect(cx-11+(i%2)*12,cy-11+(i/2)*12,10,10,3,tone);
+        break;
+    }
+    case NavIcon::store: {
+        const Color tone=onLight?rgb(0x806017):yellow;
+        c.roundRect(cx-13,cy-8,26,15,7,tone);
+        c.disc(cx-8,cy+5,5,tone);c.disc(cx+8,cy+5,5,tone);
+        const Color ink=onLight?face:shell;
+        c.roundRect(cx-10,cy-2,6,2,1,ink);c.roundRect(cx-8,cy-4,2,6,1,ink);
+        c.disc(cx+6,cy-2,1.6f,ink);c.disc(cx+9,cy+1,1.6f,ink);
+        break;
+    }
+    case NavIcon::settings: {
+        const Color tone=onLight?rgb(0xA9362C):coral;
+        for(int i=0;i<8;++i){const float a=static_cast<float>(i)*0.785398f;c.line(cx+std::cos(a)*6,cy+std::sin(a)*6,cx+std::cos(a)*12,cy+std::sin(a)*12,5,tone);}
+        c.disc(cx,cy,9,tone);c.disc(cx,cy,3.6f,onLight?face:shell);
+        break;
+    }
+    }
 }
+void navPill(Canvas& c, Section section) {
+    struct Destination { NavIcon icon; const char* name; Section section; };
+    constexpr Destination items[]={{NavIcon::library,"Library",Section::library},{NavIcon::store,"Store",Section::browse},{NavIcon::settings,"Settings",Section::settings}};
+    float row=glyphWidth(Glyph::l1)+8+8+glyphWidth(Glyph::r1)+4*4;
+    for(const auto& item:items)row+=item.section==section?30+10+textWidth(Face::black,17,item.name)+34:64;
+    const float w=row+30, x=960-w/2, y=948, cy=y+36;
+    panel(c,x,y,w,72,36,true);
+    float at=x+15;
+    at+=glyph(c,Glyph::l1,at,cy)+4+8;
+    for(const auto& item:items) {
+        const bool current=item.section==section;
+        const float iw=current?30+10+textWidth(Face::black,17,item.name)+34:64;
+        if(current) {
+            c.roundRect(at,cy-26,iw,52,26,face);
+            navIcon(c,item.icon,at+14+15,cy,true);
+            label(c,Face::black,17,at+14+30+10,cy,item.name,faceText);
+        } else navIcon(c,item.icon,at+32,cy,false);
+        at+=iw+4;
+    }
+    at+=8;
+    glyph(c,Glyph::r1,at,cy);
+}
+
+void chrome(Canvas& c, const Model& m, string_view title, bool nav, const Hint* left, unsigned leftCount, const Hint* right, unsigned rightCount, bool bottom=true) {
+    const bool signedIn=m.login.state==State::authenticated;
+    const char* name=signedIn?"NVIDIA account":"Guest";
+    const char* tag=signedIn?nullptr:"SIGNED OUT";
+    float rowW=42+12+std::min(200.0f,textWidth(Face::extrabold,19,name));
+    if(tag)rowW+=12+textWidth(Face::mono,13,tag,0.08f)+20;
+    const float pw=std::min(460.0f,rowW+32);
+    panel(c,64,36,pw,60,30,true);
+    c.disc(64+10+21,66,21,violet);
+    c.ring(64+10+21,66,20,2,face,178);
+    labelCenter(c,Face::black,18,64+10+21,66,signedIn?"N":"G",faceText);
+    float x=64+10+42+12;
+    x+=fitted(c,Face::extrabold,19,x,66,name,200,face)+12;
+    if(tag) {
+        const float bw=textWidth(Face::mono,13,tag,0.08f)+20;
+        c.roundRect(x,54,bw,24,12,violet,46);
+        label(c,Face::mono,13,x+10,66,tag,violet,0.08f);
+    }
+    const char* status=signedIn?(m.login.sessionSaved?"Login saved":"Login not saved"):"Not signed in";
+    const char* build="PS5 \xC2\xB7 ALPHA";
+    const float statusRow=9+8+textWidth(Face::mono,15,status)+18+1+18+textWidth(Face::mono,15,build);
+    const float sw=statusRow+50, sx=1856-sw;
+    panel(c,sx,36,sw,60,30,true);
+    x=sx+25;
+    dot(c,x+4.5f,66,signedIn?(m.login.sessionSaved?mint:yellow):muted);
+    x+=9+8;
+    x+=label(c,Face::mono,15,x,66,status,face)+18;
+    c.roundRect(x,55,1,22,0,face,seamAlpha);
+    label(c,Face::mono,15,x+1+18,66,build,face);
+    if(!title.empty()) {
+        const float gap=64+pw, room=sx-gap-80;
+        const float tw=std::min(textWidth(Face::black,22,title,0.01f),room);
+        fitted(c,Face::black,22,gap+(sx-gap-tw)/2,66,title,room,face,0.01f);
+    }
+    if(!bottom)return;
+    if(nav)navPill(c,m.section);
+    hintRow(c,left,leftCount,64);
+    hintRow(c,right,rightCount,1856-hintRowWidth(right,rightCount));
+}
+
+struct Button { Glyph glyph; const char* text; bool primary=false, danger=false; };
+float buttonWidth(const Button& b, float labelSize=22, float glyphSize=32) {
+    const float content=(b.glyph!=Glyph::none?glyphWidth(b.glyph,glyphSize)+14:0)+textWidth(Face::black,labelSize,b.text);
+    return std::max(160.0f,content+(b.glyph!=Glyph::none?18:24)+24+2);
+}
+float actionButton(Canvas& c, const Button& b, float x, float y, float h=72, float w=0, float labelSize=22, float glyphSize=32, bool enabled=true) {
+    if(w<=0)w=buttonWidth(b,labelSize,glyphSize);
+    const float r=std::min(26.0f,h/2);
+    const Color ink=b.primary?faceText:b.danger?coral:face;
+    if(b.primary)c.roundRect(x,y,w,h,r,face,enabled?255:107);
+    else if(b.danger){c.roundRect(x,y,w,h,r,coral,enabled?31:13);c.roundRectStroke(x,y,w,h,r,1.5f,coral,153);}
+    else {c.roundRect(x,y,w,h,r,face,18);c.roundRectStroke(x,y,w,h,r,1,face,seamAlpha);}
+    float at=x+(b.glyph!=Glyph::none?18:24);
+    const float cy=y+h/2;
+    if(b.glyph!=Glyph::none)at+=glyph(c,b.glyph,at,cy,glyphSize,b.primary?faceText:b.danger?coral:face,b.primary?face:faceText)+14;
+    fitted(c,Face::black,labelSize,at,cy,b.text,x+w-24-at,enabled?ink:mix(ink,b.primary?face:shell,0.5f));
+    return w;
+}
+
+float lerp(float a, float b, float t) {return a+(b-a)*t;}
+void screenBase(Canvas& c, Color tint) {
+    const Color base=mix(shell,tint,0.12f);
+    for(unsigned row=0;row<1080;++row) {
+        const Color color=row<432?mix(base,accent,0.07f*(1-row/432.0f)):base;
+        c.rectangle(0,row,1920,1,color);
+    }
+}
+std::uint8_t opaqueRows[1080];
+void fullRows() {if(!opaqueRows[0])std::memset(opaqueRows,255,sizeof(opaqueRows));}
+bool wantHero(const Model& m, const Game* game) {
+    return game&&m.art&&*game->hero&&m.art->want(game->hero,art::Kind::hero,m.frame)==art::State::ready;
+}
+void screenBackground(Canvas& c, const Model& m, const Game* game, Color tint) {
+    screenBase(c,tint);
+    if(!wantHero(m,game))return;
+    static std::uint8_t columns[1920];
+    static bool ready=false;
+    if(!ready) {
+        for(int i=0;i<1920;++i) {
+            const float t=static_cast<float>(i)/1919.0f;
+            const float scrim=t<0.48f?lerp(1.0f,0.60f,t/0.48f):lerp(0.60f,0.88f,(t-0.48f)/0.52f);
+            columns[i]=static_cast<std::uint8_t>(alphaOf(0.58f*0.88f*(1-scrim)));
+        }
+        fullRows();ready=true;
+    }
+    m.art->drawHero(c,game->hero,0,0,1920,1080,columns,opaqueRows);
+}
+void detailBackground(Canvas& c, const Model& m, const Game* game) {
+    c.clear(shell);
+    if(!wantHero(m,game))return;
+    static std::uint8_t columns[1920], rows[1080];
+    static bool ready=false;
+    constexpr int origin=326, heroX=653, heroW=1267;
+    if(!ready) {
+        for(int i=0;i<1920;++i) {
+            const int x=origin+i;
+            if(x<heroX){columns[i]=0;continue;}
+            const float t=static_cast<float>(x-heroX)/heroW;
+            const float scrim=t<0.32f?lerp(1.0f,0.55f,t/0.32f):t<0.6f?lerp(0.55f,0.0f,(t-0.32f)/0.28f):0.0f;
+            columns[i]=static_cast<std::uint8_t>(alphaOf(1-scrim));
+        }
+        for(int y=0;y<1080;++y)rows[y]=static_cast<std::uint8_t>(alphaOf(y<800?1.0f:1-0.9f*(y-800)/280.0f));
+        ready=true;
+    }
+    m.art->drawHero(c,game->hero,origin,0,1920,1080,columns,rows);
+}
+void stageBackground(Canvas& c, const Model& m, const Game* game) {
+    c.clear(shell);
+    if(!wantHero(m,game))return;
+    static std::uint8_t columns[1920], rows[1080];
+    static bool ready=false;
+    constexpr int origin=288, heroX=576;
+    if(!ready) {
+        for(int i=0;i<1920;++i) {
+            const int x=origin+i;
+            const float t=static_cast<float>(x)/1920.0f;
+            const float scrim=t<0.34f?1.0f:t<0.62f?lerp(1.0f,0.66f,(t-0.34f)/0.28f):lerp(0.66f,0.34f,(t-0.62f)/0.38f);
+            columns[i]=x<heroX||x>=1920?0:static_cast<std::uint8_t>(alphaOf(0.62f*(1-scrim)));
+        }
+        for(int y=0;y<1080;++y)rows[y]=static_cast<std::uint8_t>(alphaOf(y<756?1.0f:1-(y-756)/324.0f));
+        ready=true;
+    }
+    m.art->drawHero(c,game->hero,origin,0,1920,1080,columns,rows);
+}
+
+constexpr float posterW=art::tileWidth, posterH=art::tileHeight, posterRadius=22;
+void bottomScrim(Canvas& c, float x, float y, float w, float h, float radius, float start) {
+    const int from=static_cast<int>(h*start), to=static_cast<int>(h);
+    for(int row=from;row<to;++row) {
+        const float t=static_cast<float>(row-from)/static_cast<float>(to-from);
+        const float dy=static_cast<float>(row)+0.5f-(h-radius);
+        const float inset=dy>0?radius-std::sqrt(std::max(0.0f,radius*radius-dy*dy)):0;
+        c.roundRect(x+inset,y+row,w-2*inset,1,0,black,alphaOf(0.82f*t));
+    }
+}
+void poster(Canvas& c, const Model& m, const Game& game, float x, float y, bool focused, float visible=posterH) {
+    const bool full=visible>=posterH;
+    art::State state=art::State::missing;
+    if(m.art&&*game.art)state=m.art->want(game.art,art::Kind::tile,m.frame);
+    const bool drawn=state==art::State::ready&&m.art->draw(c,game.art,art::Kind::tile,x,y,posterRadius,255,static_cast<unsigned>(visible));
+    if(!drawn)c.roundRect(x,y,posterW,visible,posterRadius,storeInfo(game.store).color);
+    if(full) {
+        bottomScrim(c,x,y,posterW,posterH,posterRadius,0.6f);
+        if(!drawn) {
+            const unsigned lines=drawWrapped(c,Face::black,15,0,0,19,game.title,posterW-24,3,face,255,false);
+            drawWrapped(c,Face::black,15,x+12,y+posterH-8-32-8-lines*19.0f,19,game.title,posterW-24,3,face);
+            if(state==art::State::loading)for(int i=0;i<3;++i)c.disc(x+20+i*14.0f,y+22,4,face,i==0?220:90);
+        }
+        c.roundRect(x+8,y+posterH-8-32,32,32,16,black,140);
+        storeMark(c,x+8+16,y+posterH-8-16,24,game.store);
+    }
+    if(focused)focusFrame(c,x,y,posterW,visible,posterRadius);
+    else c.roundRectStroke(x,y,posterW,visible,posterRadius,1,face,seamAlpha);
+}
+void pageTile(Canvas& c, float x, float y, bool loading, float visible=posterH) {
+    c.roundRect(x,y,posterW,visible,posterRadius,face,5);
+    c.roundRectStroke(x,y,posterW,visible,posterRadius,2,face,97);
+    if(visible<posterH)return;
+    const float cx=x+posterW/2, cy=y+posterH/2-14;
+    if(loading){for(int i=0;i<3;++i)c.disc(cx-14+i*14.0f,cy,4,face,i==0?255:90);}
+    else {c.roundRect(cx-10,cy-1.5f,20,3,1.5f,face);c.roundRect(cx-1.5f,cy-10,3,20,1.5f,face);}
+    labelCenter(c,Face::extrabold,15,cx,cy+30,loading?"Loading\xE2\x80\xA6":"Next page",face);
+}
+struct GridLayout { float x, y, stepX, stepY, clip; unsigned columns; };
+void posterGrid(Canvas& c, const Model& m, const CloudView& v, unsigned focus, const GridLayout& g) {
+    const unsigned focusRow=focus/g.columns, top=focusRow>0?focusRow-1:0;
+    const bool pageTileShown=v.hasNext||v.state==CloudState::loading;
+    const unsigned slots=v.count+(pageTileShown?1:0);
+    for(unsigned row=top;row*g.columns<slots;++row) {
+        const float y=g.y+(row-top)*g.stepY;
+        const float visible=std::min(posterH,g.clip-y);
+        if(visible<24)break;
+        for(unsigned col=0;col<g.columns;++col) {
+            const unsigned index=row*g.columns+col;
+            if(index>=slots)break;
+            const float x=g.x+col*g.stepX;
+            if(index<v.count)poster(c,m,v.games[index],x,y,index==focus,visible);
+            else pageTile(c,x,y,v.state==CloudState::loading,visible);
+        }
+    }
+}
+
+void searchField(Canvas& c, float x, float y, float w, string_view text, bool query) {
+    c.roundRect(x,y,w,60,30,shell,158);
+    c.roundRectStroke(x,y,w,60,30,1,face,seamAlpha);
+    const float cy=y+30;
+    glyph(c,Glyph::triangle,x+15,cy);
+    c.ring(x+84,cy-3,7,2.4f,face);c.line(x+89,cy+2,x+95,cy+8,2.6f,face);
+    fitted(c,Face::bold,18,x+110,cy,text,w-110-24,query?face:muted);
+}
+const char* storeCatalogText(const Model& m, char* buffer, std::size_t size) {
+    if(*m.searchText)std::snprintf(buffer,size,"\xE2\x80\x9C%.90s\xE2\x80\x9D \xC2\xB7 new search",m.searchText);
+    else std::snprintf(buffer,size,"Search all GeForce NOW games");
+    return buffer;
+}
+
+struct Message { const char* title; const char* body; Button primary; Button secondary; };
+void centeredMessage(Canvas& c, float cx, float cy, float width, const Message& msg) {
+    const unsigned lines=drawWrapped(c,Face::semibold,18,0,0,26,msg.body?msg.body:"",width,3,muted,255,false);
+    const bool buttons=msg.primary.text||msg.secondary.text;
+    const float h=42+(lines?14+lines*26.0f:0)+(buttons?28+72:0);
+    float y=cy-h/2;
+    labelCenter(c,Face::black,30,cx,y+21,msg.title,face);
+    y+=42;
+    if(lines) {
+        y+=14;
+        const float bw=std::min(width,textWidth(Face::semibold,18,msg.body));
+        drawWrapped(c,Face::semibold,18,lines>1?cx-width/2:cx-bw/2,y,26,msg.body,width,3,muted);
+        y+=lines*26.0f;
+    }
+    if(!buttons)return;
+    y+=28;
+    const float pw=msg.primary.text?buttonWidth(msg.primary):0, sw=msg.secondary.text?buttonWidth(msg.secondary):0;
+    float x=cx-(pw+sw+(pw&&sw?14:0))/2;
+    if(msg.primary.text)x+=actionButton(c,msg.primary,x,y)+14;
+    if(msg.secondary.text)actionButton(c,msg.secondary,x,y);
+}
+Message catalogMessage(const Model& m, char* buffer, std::size_t size) {
+    const auto& v=catalogFor(m.section,m.session,m.library);
+    const bool library=m.section==Section::library;
+    if(m.screen==Screen::catalogLoading)
+        return {library?"Loading your library\xE2\x80\xA6":"Loading the live catalog\xE2\x80\xA6",
+                library?"OpenNOW is asking NVIDIA for the games on your account.":"OpenNOW is asking NVIDIA for the games you can stream.",{},{}};
+    if(m.screen==Screen::catalogError)
+        return {library?"Your library didn\xE2\x80\x99t load":"Catalog unavailable",*v.message?v.message:"No details reported",{Glyph::cross,"Try again",true},{}};
+    if(v.hasNext) {
+        std::snprintf(buffer,size,"OpenNOW looked through catalog page %u without finding a game you own. More pages remain, so your library may continue further on.",v.page+1);
+        return {"No owned games found yet",buffer,{Glyph::cross,"Keep looking",true},{Glyph::square,"Refresh"}};
+    }
+    if(library)return {"Nothing in your library yet","Games you add to your GeForce NOW library on your NVIDIA account show up here. The Store has the full catalog.",{Glyph::cross,"Open Store",true},{Glyph::square,"Refresh"}};
+    if(*m.searchText)std::snprintf(buffer,size,"Nothing matched \xE2\x80\x9C%.100s\xE2\x80\x9D. Try a shorter title.",m.searchText);
+    else std::snprintf(buffer,size,"%s",v.message);
+    return {"No games found",buffer,{Glyph::triangle,"Search",true},{Glyph::square,"Refresh"}};
+}
+
+void gamePanel(Canvas& c, const Model& m, const CloudView& v, unsigned focus, bool hasGame) {
+    const float x=1336, y=228, w=488, h=680, ix=x+37, iw=w-74;
+    panel(c,x,y,w,h,40);
+    if(!hasGame) {
+        eyebrow(c,ix,y+46,m.section==Section::library?"GeForce NOW library":"GeForce NOW catalog");
+        label(c,Face::black,40,ix,y+46+38,"Pick a game",face,-0.02f);
+        return;
+    }
+    const Game& game=v.games[focus];
+    char text[192];
+    std::snprintf(text,sizeof(text),"%s \xC2\xB7 game %u of %u",storeName(game.store),focus+1,v.count);
+    eyebrow(c,ix,y+46,text,muted,14,iw);
+    const unsigned lines=drawWrapped(c,Face::black,40,ix,y+58,46,game.title,iw,2,face);
+    float at=y+58+lines*46.0f;
+    const bool owned=m.section==Section::library||game.owned;
+    if(owned) {
+        at+=16;
+        dot(c,ix+4.5f,at+12,mint);
+        std::snprintf(text,sizeof(text),"In your %s library",storeName(game.store));
+        fitted(c,Face::extrabold,17,ix+17,at+12,text,iw-17,mint);
+        at+=24;
+    }
+    at+=20;
+    eyebrow(c,ix,at+9,"Available on",muted,13);
+    at+=18+9;
+    unsigned siblings[8];
+    const unsigned count=storeSiblings(v,focus,siblings,8);
+    float cx=ix;
+    for(unsigned i=0;i<count;++i) {
+        const char* store=v.games[siblings[i]].store;
+        const float cw=storeChipWidth(store);
+        if(cx>ix&&cx+cw>ix+iw){cx=ix;at+=48;}
+        storeChip(c,cx,at+20,store);
+        cx+=cw+8;
+    }
+    const float bottom=y+h-37;
+    rule(c,ix,bottom-30-12-7,iw);
+    const Hint open{Glyph::cross,"Open details & play"};
+    float hx=ix;
+    hx+=glyph(c,open.glyph,hx,bottom-15)+12;
+    label(c,Face::extrabold,18,hx,bottom-15,open.text,face);
+}
+
+const Hint closeAppHint{Glyph::circle,"Close app"};
+void catalogChrome(Canvas& c, const Model& m, const char* title, const CloudView& v, bool hasGames, const Message& msg) {
+    const Hint left[]={{Glyph::triangle,"Search"},closeAppHint};
+    Hint right[2]{};
+    unsigned n=0;
+    if(m.screen!=Screen::catalogLoading)right[n++]={Glyph::square,"Refresh"};
+    if(hasGames)right[n++]={Glyph::cross,v.state==CloudState::failed?"Try again":"Details"};
+    else if(msg.primary.glyph==Glyph::cross)right[n++]={Glyph::cross,msg.primary.text};
+    chrome(c,m,title,true,left,2,right,n);
+}
+void libraryScreen(Canvas& c, const Model& m) {
+    const auto& v=m.library;
+    const bool hasGames=m.screen==Screen::grid&&v.count;
+    const unsigned focus=hasGames?std::min(m.focus,v.count-1):0;
+    screenBackground(c,m,hasGames?&v.games[focus]:nullptr,rgb(0x354016));
+    char text[160],body[256];
+    const Message msg=hasGames?Message{}:catalogMessage(m,body,sizeof(body));
+    searchField(c,96,126,440,storeCatalogText(m,text,sizeof(text)),false);
+    if(hasGames||v.count) {
+        if(v.page||v.hasNext)std::snprintf(text,sizeof(text),"%u games in your library \xC2\xB7 page %u",v.count,v.page+1);
+        else std::snprintf(text,sizeof(text),"%u games in your library",v.count);
+        upper(text);
+        labelRight(c,Face::mono,15,1824,156,text,muted,0.09f);
+    }
+    if(hasGames) {
+        posterGrid(c,m,v,focus,{99,232,172,269,916,gridColumns(Section::library)});
+        if(v.state==CloudState::failed) {
+            char error[256];std::snprintf(error,sizeof(error),"Couldn\xE2\x80\x99t load that page \xC2\xB7 %s",v.message);
+            panel(c,96,862,1226,48,24,true);
+            fitted(c,Face::semibold,17,124,886,error,1226-56,coral);
+        }
+    } else centeredMessage(c,701,565,900,msg);
+    gamePanel(c,m,v,focus,hasGames);
+    catalogChrome(c,m,"Library",v,hasGames,msg);
+}
+void storeStrip(Canvas& c, const CloudView& v, unsigned focus) {
+    const Game& game=v.games[focus];
+    const float x=96, y=820, w=1728, h=96, cy=y+h/2;
+    panel(c,x,y,w,h,32,true);
+    unsigned siblings[4];
+    const unsigned count=storeSiblings(v,focus,siblings,4);
+    float facts=textWidth(Face::mono,13,"AVAILABLE ON",0.12f)+22;
+    for(unsigned i=0;i<count;++i)facts+=storeChipWidth(v.games[siblings[i]].store,32,6)+(i?8:0);
+    char text[160];
+    std::snprintf(text,sizeof(text),"In your %s library",storeName(game.store));
+    if(game.owned)facts+=22+1+22+17+textWidth(Face::extrabold,17,text);
+    fitted(c,Face::black,26,x+29,cy-12,game.title,w-facts-80,face);
+    char sub[96];std::snprintf(sub,sizeof(sub),"%s \xC2\xB7 game %u of %u \xC2\xB7 page %u",storeName(game.store),focus+1,v.count,v.page+1);
+    label(c,Face::bold,16,x+29,cy+18,sub,muted);
+    float at=x+w-29-facts;
+    at+=label(c,Face::mono,13,at,cy,"AVAILABLE ON",muted,0.12f)+22;
+    for(unsigned i=0;i<count;++i)at+=storeChip(c,at,cy,v.games[siblings[i]].store,32,6)+8;
+    if(game.owned) {
+        at+=14;c.roundRect(at,cy-22,1,44,0,face,seamAlpha);at+=23;
+        dot(c,at+4.5f,cy,mint);
+        label(c,Face::extrabold,17,at+17,cy,text,mint);
+    }
+}
+void storeScreen(Canvas& c, const Model& m, bool hints=true) {
+    const auto& v=m.session;
+    const bool hasGames=(m.screen==Screen::grid||m.screen==Screen::search)&&v.count;
+    const unsigned focus=hasGames?std::min(m.focus,v.count-1):0;
+    screenBackground(c,m,hasGames?&v.games[focus]:nullptr,rgb(0x18230F));
+    eyebrow(c,96,130,*m.searchText?"Search results":"GeForce NOW catalog");
+    char text[160],body[256];
+    const Message msg=hasGames?Message{}:catalogMessage(m,body,sizeof(body));
+    if(*m.searchText)std::snprintf(text,sizeof(text),"\xE2\x80\x9C%.100s\xE2\x80\x9D",m.searchText);
+    else std::snprintf(text,sizeof(text),"Available games");
+    const float tw=fitted(c,Face::black,40,96,166,text,900,face,-0.02f);
+    searchField(c,96+tw+28,136,std::min(560.0f,1824-420-(96+tw+28)),*m.searchText?"New search":"Search all games",false);
+    if(v.count) {
+        if(v.hasNext)std::snprintf(text,sizeof(text),"Page %u \xC2\xB7 %u loaded \xC2\xB7 more available",v.page+1,v.count);
+        else std::snprintf(text,sizeof(text),"Page %u \xC2\xB7 %u loaded",v.page+1,v.count);
+        upper(text);
+        labelRight(c,Face::mono,15,1824,173,text,muted,0.09f);
+    }
+    if(hasGames) {
+        posterGrid(c,m,v,focus,{100,208,174,256,812,gridColumns(Section::browse)});
+        if(v.state==CloudState::failed) {
+            char error[256];std::snprintf(error,sizeof(error),"Couldn\xE2\x80\x99t load that page \xC2\xB7 %s",v.message);
+            const float ew=std::min(textWidth(Face::semibold,17,error)+56,1728.0f);
+            panel(c,960-ew/2,760,ew,44,22,true);
+            fitted(c,Face::semibold,17,960-ew/2+28,782,error,ew-56,coral);
+        }
+        storeStrip(c,v,focus);
+    } else centeredMessage(c,960,502,900,msg);
+    if(hints)catalogChrome(c,m,"Store",v,hasGames,msg);
+}
+
 string_view profileName(StreamProfile p, char* buffer, std::size_t size) {
     const auto s=settingsFor(p);
     const char* prefix=p==StreamProfile::quality?"Quality ":p==StreamProfile::smooth?"Smooth ":p==StreamProfile::experimental?"Experimental ":p==StreamProfile::compatibility?"Compatibility ":"";
     if(s.height>=2160)std::snprintf(buffer,size,"%s4K%d %s",prefix,s.fps,s.hdr()?"HDR":"SDR");
     else std::snprintf(buffer,size,"%s%dp%d",prefix,s.height,s.fps);
     return buffer;
+}
+bool isPreset(const StreamSettings& s) {
+    for(unsigned i=0;i<static_cast<unsigned>(StreamProfile::count);++i)if(presetFor(static_cast<StreamProfile>(i),s)==s)return true;
+    return false;
 }
 string_view settingsName(const StreamSettings& s, char* buffer, std::size_t size) {
     for(unsigned i=0;i<static_cast<unsigned>(StreamProfile::count);++i)
@@ -179,1048 +615,960 @@ string_view settingsName(const StreamSettings& s, char* buffer, std::size_t size
     else std::snprintf(buffer,size,"Custom %dp%d%s",s.height,s.fps,s.hdr()?" HDR":"");
     return buffer;
 }
-const char* codecLabel(const StreamSettings& s) {return s.hdr()?"HEVC HDR":s.tenBit()?"HEVC 10-bit":"H.264";}
-string_view settingsSpec(const StreamSettings& s, char* buffer, std::size_t size) {
-    std::snprintf(buffer,size,"%d\xC3\x97%d \xC2\xB7 %s \xC2\xB7 %s \xC2\xB7 %d Mb/s",s.width,s.height,codecLabel(s),s.hardware()?"hardware":"software",s.bitrate_kbps/1000);
-    return buffer;
-}
-void topBar(Canvas& c, const Model& m, bool tabs) {
-    logo(c,left,66);
-    const float base=baselineIn(Face::black,34,56,64);
-    const float w=drawText(c,Face::black,34,176,base,"OpenNOW",ink,-0.01f);
-    drawText(c,Face::bold,20,176+w+14,base,"PS5 \xC2\xB7 ALPHA",muted,0.08f);
-    const bool signedIn=m.login.state==State::authenticated;
-    const char* account=signedIn?(m.login.sessionSaved?"NVIDIA account saved":"Signed in \xC2\xB7 not saved"):"Not signed in";
-    const float aw=textWidth(Face::bold,22,account)+22+12+12+22;
-    const float x=right-aw;
-    c.roundRect(x,60,aw,56,28,surface);
-    c.disc(x+22+6,88,6,signedIn?(m.login.sessionSaved?mint:amber):dim);
-    label(c,Face::bold,22,x+22+12+12,88,account,ink);
-    if(!tabs)return;
-    const char* names[]={"Library","Browse","Settings"};
-    float total=pillWidth("L1")+pillWidth("R1")+40*4;
-    for(unsigned i=0;i<3;++i)total+=textWidth(i==static_cast<unsigned>(m.section)?Face::black:Face::bold,28,names[i]);
-    float at=960-total/2;
-    at+=pill(c,"L1",at,88)+40;
-    for(unsigned i=0;i<3;++i) {
-        const bool active=i==static_cast<unsigned>(m.section);
-        const float tw=textWidth(active?Face::black:Face::bold,28,names[i]);
-        label(c,active?Face::black:Face::bold,28,at,88,names[i],active?ink:muted);
-        if(active)c.roundRect(at,112,tw,4,2,mint);
-        at+=tw+40;
-    }
-    pill(c,"R1",at,88);
-}
-void eyebrow(Canvas& c, float x, float centerY, string_view text, Color color) {label(c,Face::extrabold,22,x,centerY,text,color,0.14f);}
-float headline(Canvas& c, float size, float lineHeight, float top, string_view text, float maxWidth, unsigned maxLines) {
-    const unsigned lines=drawWrapped(c,Face::black,size,left,top,lineHeight,text,maxWidth,maxLines,ink);
-    return top+lines*lineHeight;
-}
-float body(Canvas& c, float top, string_view text, float maxWidth, unsigned maxLines=3, Color color=muted) {
-    const unsigned lines=drawWrapped(c,Face::semibold,28,left,top,40,text,maxWidth,maxLines,color);
-    return top+lines*40;
-}
-float button(Canvas& c, float x, float y, Glyph icon, string_view text, bool primary) {
-    const float w=16+48+16+textWidth(Face::black,28,text)+36;
-    c.roundRect(x,y,w,80,40,primary?mint:raised);
-    c.disc(x+16+24,y+40,24,primary?mintInk:ground);
-    glyph(c,icon,x+16+24,y+40,ink);
-    label(c,Face::black,28,x+16+48+16,y+40,text,primary?mintInk:ink);
-    return w;
-}
-float holdButton(Canvas& c, float x, float y, string_view text) {
-    const float w=16+48+8+20+8+58+16+textWidth(Face::black,28,text)+36;
-    c.roundRect(x,y,w,80,40,raised);
-    float at=x+16;
-    c.roundRect(at,y+20,48,40,10,ground);glyph(c,Glyph::options,at+24,y+40,ink,24);at+=48+8;
-    at+=label(c,Face::black,20,at,y+40,"+",dim)+8;
-    c.roundRect(at,y+18,58,44,10,ground);glyph(c,Glyph::touch,at+29,y+40,ink);at+=58+16;
-    label(c,Face::black,28,at,y+40,text,ink);
-    return w;
-}
-void detailCard(Canvas& c, float top, string_view first, string_view second, Color accent) {
-    const float h=second.empty()?72:106;
-    c.roundRect(left,top,980,h,18,surface);
-    c.roundRect(left,top+8,4,h-16,2,accent);
-    drawFitted(c,Face::mono,22,left+28,baselineIn(Face::mono,22,top+20,32),first,924,ink);
-    if(!second.empty())drawFitted(c,Face::mono,20,left+28,baselineIn(Face::mono,20,top+56,30),second,924,muted);
-}
-void warningIcon(Canvas& c, float cx, float cy, Color color) {
-    c.ring(cx,cy,15,2.8f,color);c.line(cx,cy-8,cx,cy+3,3.2f,color);c.disc(cx,cy+9,2,color);
+const char* codecLabel(const StreamSettings& s) {return s.hdr()?"HEVC \xC2\xB7 10-bit \xC2\xB7 HDR":s.tenBit()?"HEVC \xC2\xB7 10-bit":"H.264 \xC2\xB7 8-bit";}
+string_view outputLabel(const Model& m) {
+    string_view output(m.output?m.output:"");
+    if(output.rfind("OUTPUT ",0)==0)output.remove_prefix(7);
+    return output;
 }
 
-float fitTitle(string_view title, float maxWidth, float largest, float smallest, float tracking=-0.025f) {
-    for(int size=static_cast<int>(largest);size>static_cast<int>(smallest);size-=4)
-        if(textWidth(Face::black,static_cast<float>(size),title,tracking)<=maxWidth)return static_cast<float>(size);
-    return smallest;
+void factRow(Canvas& c, float x, float cy, float w, string_view key, string_view value, Color valueColor=face) {
+    label(c,Face::bold,19,x,cy,key,muted);
+    const float vw=std::min(textWidth(Face::extrabold,19,value),w*0.66f);
+    fitted(c,Face::extrabold,19,x+w-vw,cy,value,vw+1,valueColor);
 }
-constexpr float tileW=art::tileWidth, tileH=art::tileHeight, tileStep=296, gridTop=436, peekTop=834;
-void fallbackTile(Canvas& c, const Game& game, float x, float y, float fade, bool missingArt) {
-    const auto colors=storeColors(game.store);
-    c.verticalGradient(x,y,tileW,tileH,18,mix(colors.top,ground,fade),mix(colors.bottom,ground,fade));
-    const unsigned alpha=static_cast<unsigned>(255*(1-fade));
-    drawFitted(c,Face::black,14,x+22,baselineIn(Face::black,14,y+22,20),game.store,missingArt?170:204,white,0.12f,alpha*82/100);
-    if(missingArt) {
-        const float ix=x+tileW-22-22, iy=y+22;
-        c.roundRectStroke(ix+3,iy+4,17,14,2.5f,2,white,alpha*55/100);
-        c.line(ix+2,iy+21,ix+20,iy+3,2,white,alpha*55/100);
-    }
-    const unsigned lines=drawWrapped(c,Face::black,28,0,0,32,game.title,204,5,ink,255,false);
-    drawWrapped(c,Face::black,28,x+22,y+tileH-22-lines*32.0f,32,game.title,204,5,white,alpha);
-}
-void loadingTile(Canvas& c, const Game& game, float x, float y, float fade) {
-    c.verticalGradient(x,y,tileW,tileH,18,mix(raised,ground,fade),mix(surface,ground,fade));
-    const unsigned alpha=static_cast<unsigned>(255*(1-fade));
-    c.disc(x+27,y+27,5,mint,alpha);c.disc(x+45,y+27,5,hairline,alpha);c.disc(x+63,y+27,5,hairline,alpha);
-    char tag[96];std::snprintf(tag,sizeof(tag),"%s \xC2\xB7 LOADING ART",game.store);
-    const unsigned lines=drawWrapped(c,Face::black,28,0,0,32,game.title,204,4,ink,255,false);
-    const float titleTop=y+tileH-22-lines*32.0f;
-    drawFitted(c,Face::extrabold,14,x+22,baselineIn(Face::extrabold,14,titleTop-28,20),tag,204,dim,0.12f,alpha);
-    drawWrapped(c,Face::black,28,x+22,titleTop,32,game.title,204,4,muted,alpha);
-}
-void coverTile(Canvas& c, const Model& m, const Game& game, float x, float y, bool focused, float fade, bool ownedBadge) {
-    if(focused)c.roundRectStroke(x-11,y-11,tileW+22,tileH+22,29,5,mint);
-    art::State state=art::State::missing;
-    if(m.art&&*game.art)state=m.art->want(game.art,art::Kind::tile,m.frame);
-    const unsigned alpha=static_cast<unsigned>(255*(1-fade));
-    if(state==art::State::ready&&m.art->draw(c,game.art,art::Kind::tile,x,y,18,alpha)) {
-        const float bw=std::min(textWidth(Face::black,14,game.store,0.1f)+20,tileW-28);
-        c.roundRect(x+14,y+tileH-14-30,bw,30,8,ground,alpha*82/100);
-        drawFitted(c,Face::black,14,x+24,baselineIn(Face::black,14,y+tileH-44,30),game.store,bw-20,ink,0.1f,alpha);
-        if(ownedBadge&&game.owned) {
-            const float ow=6+18+6+textWidth(Face::black,13,"IN LIBRARY",0.1f)+10;
-            c.roundRect(x+tileW-14-ow,y+14,ow,30,15,mint,alpha);
-            glyph(c,Glyph::check,x+tileW-14-ow+15,y+29,mintInk,18);
-            label(c,Face::black,13,x+tileW-14-ow+30,y+29,"IN LIBRARY",mintInk,0.1f,alpha);
-        }
-        return;
-    }
-    if(state==art::State::loading)loadingTile(c,game,x,y,fade);
-    else fallbackTile(c,game,x,y,fade,*game.art!=0);
-}
-void bottomFade(Canvas& c, float from) {
-    for(int row=static_cast<int>(from);row<1080;++row) {
-        const float y=static_cast<float>(row);
-        const float t=(y-from)/(1080-from);
-        const float a=t<0.45f?t/0.45f*0.92f:t<0.7f?0.92f+(t-0.45f)/0.25f*0.08f:1.0f;
-        c.roundRect(0,y,1920,1,0,ground,static_cast<unsigned>(a*255));
-    }
-}
-void storePill(Canvas& c, float x, float cy, string_view store) {
-    const float w=std::min(textWidth(Face::black,18,store,0.08f)+28,360.0f);
-    c.roundRect(x,cy-18,w,36,8,storeAccent(store));
-    drawFitted(c,Face::black,18,x+14,baselineIn(Face::black,18,cy-18,36),store,w-28,white,0.08f);
-}
-float primaryPill(Canvas& c, float rightX, float y, string_view text) {
-    const float w=14+48+18+textWidth(Face::black,28,text)+32;
-    const float x=rightX-w;
-    c.roundRect(x,y,w,72,36,mint);
-    c.disc(x+14+24,y+36,24,mintInk);glyph(c,Glyph::cross,x+14+24,y+36,ink);
-    label(c,Face::black,28,x+14+48+18,y+36,text,mintInk);
-    return w;
-}
-void heroBackdrop(Canvas& c, const Model& m, const Game& game) {
-    if(!m.art||!*game.hero||m.art->want(game.hero,art::Kind::hero,m.frame)!=art::State::ready)return;
-    static std::uint8_t columns[1280], rows[720];
-    static bool ready=false;
-    if(!ready) {
-        for(int i=0;i<1280;++i) {
-            const float t=static_cast<float>(i)/1279.0f;
-            const float scrim=t<0.45f?1.0f-(t/0.45f)*0.45f:0.55f-((t-0.45f)/0.55f)*0.40f;
-            columns[i]=static_cast<std::uint8_t>(std::clamp((1.0f-scrim)*0.55f,0.0f,1.0f)*255);
-        }
-        for(int i=0;i<720;++i) {
-            const float t=static_cast<float>(i)/719.0f;
-            const float scrim=t<0.30f?0.35f*(1-t/0.30f):t<0.62f?0.6f*(t-0.30f)/0.32f:t<0.88f?0.6f+0.4f*(t-0.62f)/0.26f:1.0f;
-            rows[i]=static_cast<std::uint8_t>(std::clamp(1.0f-scrim,0.0f,1.0f)*255);
-        }
-        ready=true;
-    }
-    m.art->drawHero(c,game.hero,640,0,1280,720,columns,rows);
-}
-const char* sectionEyebrow(const Model& m) {
-    if(m.section==Section::library)return "YOUR LIBRARY";
-    return *m.searchText?"SEARCH RESULTS":"BROWSE CATALOG";
-}
-void sectionHints(Canvas& c, const Hint* l, unsigned n) {
-    const Hint r[]={sections,closeApp};
-    hints(c,l,n,r,2);
-}
-void grid(Canvas& c, const Model& m) {
-    const auto& v=catalogFor(m.section,m.session,m.library);
-    const unsigned focus=std::min(m.focus,v.count-1);
-    const Game& game=v.games[focus];
-    const bool browse=m.section==Section::browse;
-    heroBackdrop(c,m,game);
-    const float eyebrowW=label(c,Face::extrabold,22,left,230,sectionEyebrow(m),mint,0.14f);
-    if(browse) {
-        char text[160];
-        if(*m.searchText)std::snprintf(text,sizeof(text),"\xE2\x80\x9C%.100s\xE2\x80\x9D \xC2\xB7 new search",m.searchText);
-        else std::snprintf(text,sizeof(text),"Search all games");
-        const float pw=8+28+10+std::min(textWidth(Face::bold,20,text),520.0f)+16;
-        const float px=left+eyebrowW+20;
-        c.roundRect(px,210,pw,40,20,surface,220);
-        c.disc(px+8+14,230,14,raised);glyph(c,Glyph::triangle,px+8+14,230,ink,18);
-        drawFitted(c,Face::bold,20,px+8+28+10,baselineIn(Face::bold,20,210,40),text,520,muted);
-    }
-    const float pillW=primaryPill(c,right,324,"Select");
-    const float room=width-pillW-48;
-    const float size=fitTitle(game.title,room,88,60);
-    drawFitted(c,Face::black,size,left,baselineIn(Face::black,size,262+(88-size)/2,size),game.title,room,ink,-0.025f);
-    storePill(c,left,378,game.store);
-    char meta[160];
-    const char* owned=browse?(game.owned?"In your library":"Not in your library"):"In your library";
-    if(v.page||v.hasNext)std::snprintf(meta,sizeof(meta),"%s \xC2\xB7 Game %u of %u \xC2\xB7 Page %u",owned,focus+1,v.count,v.page+1);
-    else std::snprintf(meta,sizeof(meta),"%s \xC2\xB7 Game %u of %u",owned,focus+1,v.count);
-    label(c,Face::bold,22,left+std::min(textWidth(Face::black,18,game.store,0.08f)+28,360.0f)+14,378,meta,muted);
-    const unsigned rows=(v.count+gridColumns-1)/gridColumns, row=focus/gridColumns;
-    for(unsigned r=row;r<row+2&&r<rows+1;++r) {
-        const float y=r==row?gridTop:peekTop;
-        const float fade=r==row?0:0.45f;
-        for(unsigned col=0;col<gridColumns;++col) {
-            const unsigned index=r*gridColumns+col;
-            const float x=left+col*tileStep;
-            if(index<v.count){coverTile(c,m,v.games[index],x,y,index==focus,fade,browse);continue;}
-            if(index==v.count&&(v.hasNext||v.state==CloudState::loading)) {
-                c.roundRectStroke(x,y,tileW,tileH,18,2,hairline);
-                const bool loading=v.state==CloudState::loading;
-                c.disc(x+tileW/2-22,y+tileH/2-40,6,mint);c.disc(x+tileW/2,y+tileH/2-40,6,hairline);c.disc(x+tileW/2+22,y+tileH/2-40,6,hairline);
-                const char* head=loading?"Loading more":"More games";
-                label(c,Face::extrabold,22,x+tileW/2-textWidth(Face::extrabold,22,head)/2,y+tileH/2,head,muted);
-                drawWrapped(c,Face::semibold,18,x+34,y+tileH/2+22,24,"Keep moving past the last game for the next page",180,3,dim);
-            }
-            break;
-        }
-    }
-    bottomFade(c,800);
-    if(v.state==CloudState::failed) {
-        char text[256];std::snprintf(text,sizeof(text),"Couldn\xE2\x80\x99t load that page \xC2\xB7 %s",v.message);
-        const float bw=std::min(textWidth(Face::bold,22,text)+48+44+12,width);
-        c.roundRect(left,888,bw,52,26,surface);
-        c.roundRect(left,888,4,52,2,coral);
-        well(c,Glyph::cross,left+14,914);
-        drawFitted(c,Face::bold,22,left+14+44+12,baselineIn(Face::bold,22,888,52),text,bw-80,coral);
-    }
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move"},{HintKind::glyph,Glyph::cross,nullptr,v.state==CloudState::failed?"Try again":"Select"},
-        {HintKind::glyph,Glyph::triangle,nullptr,browse?"Search":"Search catalog"},{HintKind::glyph,Glyph::square,nullptr,"Refresh"}};
-    sectionHints(c,l,4);
-}
-void catalogStatus(Canvas& c, const Model& m) {
-    const auto& v=catalogFor(m.section,m.session,m.library);
-    const bool library=m.section==Section::library;
-    if(m.screen==Screen::catalogLoading) {
-        eyebrow(c,left,230,sectionEyebrow(m),mint);
-        headline(c,88,92,262,library?"Loading your library":"Loading the catalog",width,1);
-        for(unsigned col=0;col<gridColumns;++col)c.roundRect(left+col*tileStep,gridTop,tileW,tileH,18,surface);
-        bottomFade(c,700);
-        sectionHints(c,nullptr,0);
-        return;
-    }
-    if(m.screen==Screen::catalogError) {
-        warningIcon(c,left+18,254,coral);
-        eyebrow(c,left+52,254,library?"LIBRARY UNAVAILABLE":"CATALOG UNAVAILABLE",coral);
-        float y=headline(c,104,108,294,library?"Your library didn\xE2\x80\x99t load":"The catalog didn\xE2\x80\x99t load",1300,1);
-        y=body(c,y+20,library?"The NVIDIA library request failed. Your games are still on your account.":"NVIDIA didn\xE2\x80\x99t return the catalog. Check the connection and try again.",1000,2);
-        detailCard(c,y+28,*v.message?v.message:"No details reported","",coral);
-        button(c,left,y+28+72+48,Glyph::cross,"Try again",true);
-        sectionHints(c,nullptr,0);
-        return;
-    }
-    const bool more=v.hasNext;
-    eyebrow(c,left,254,more?(library?"YOUR LIBRARY \xC2\xB7 STILL LOOKING":"BROWSE \xC2\xB7 STILL LOOKING"):library?"YOUR LIBRARY \xC2\xB7 EMPTY":"BROWSE \xC2\xB7 NO RESULTS",muted);
-    float y=headline(c,104,108,294,more?"No owned games found yet":library?"Nothing in your library yet":"No games found",1400,1);
-    char text[256];
-    if(more)std::snprintf(text,sizeof(text),"OpenNOW looked through catalog page %u without finding a game you own. More pages remain, so your library may continue further on.",v.page+1);
-    else if(library)std::snprintf(text,sizeof(text),"Games you add to your GeForce NOW library on your NVIDIA account show up here. Browse the full catalog to find something to play.");
-    else if(*m.searchText)std::snprintf(text,sizeof(text),"Nothing matched \xE2\x80\x9C%.100s\xE2\x80\x9D. Try a shorter title.",m.searchText);
-    else std::snprintf(text,sizeof(text),"%s",v.message);
-    y=body(c,y+24,text,1000,2);
-    float x=left;
-    if(more)x+=button(c,x,y+40,Glyph::cross,"Keep looking",true)+20;
-    else if(library)x+=button(c,x,y+40,Glyph::cross,"Browse catalog",true)+20;
-    else x+=button(c,x,y+40,Glyph::triangle,"Search",true)+20;
-    button(c,x,y+40,Glyph::square,"Refresh",false);
-    sectionHints(c,nullptr,0);
-}
-
-void search(Canvas& c, const Model& m) {
-    const auto& s=m.search;
-    eyebrow(c,left,205,"SEARCH CATALOG",mint);
-    c.roundRect(left,240,width,120,24,mint);
-    c.roundRect(left,240,width,116,24,surface);
-    char count[32];std::snprintf(count,sizeof(count),"%zu / %zu",std::strlen(s.text),sizeof(s.text)-1);
-    const float countW=labelRight(c,Face::bold,22,right-36,300,count,dim);
-    const float room=width-72-countW-48;
-    string_view text(s.text);
-    while(!text.empty()&&textWidth(Face::black,72,text,-0.01f)>room)text.remove_prefix(1);
-    const float base=baselineIn(Face::black,72,300-50,100);
-    float caret=left+36;
-    if(text.empty())drawText(c,Face::black,72,left+36,base,"Type a game title",hairline,-0.01f);
-    else caret+=drawText(c,Face::black,72,left+36,base,text,ink,-0.01f)+6;
-    if(!text.empty())c.roundRect(caret,264,5,72,2.5f,mint);
-    else c.roundRect(left+36,264,5,72,2.5f,mint);
-    for(unsigned i=0;i<CatalogSearch::count;++i) {
-        const unsigned col=CatalogSearch::column(i), row=CatalogSearch::row(i);
-        const float x=col<10?left+col*116.0f:1308+(col-11)*116.0f, y=408+row*100.0f;
-        const bool focused=i==s.selected;
-        if(focused)c.roundRectStroke(x-9,y-9,122,106,25,4,mint);
-        c.roundRect(x,y,104,88,16,focused?mint:surface);
-        const Color color=focused?mintInk:ink;
-        if(CatalogSearch::keys[i]==' ') {
-            c.line(x+34,y+40,x+34,y+52,3,color);c.line(x+34,y+52,x+70,y+52,3,color);c.line(x+70,y+52,x+70,y+40,3,color);
-        } else {
-            const char key[2]{CatalogSearch::keys[i],0};
-            const float kw=textWidth(Face::extrabold,36,key);
-            label(c,Face::extrabold,36,x+52-kw/2,y+44,key,color);
-        }
-    }
-    label(c,Face::semibold,24,left,850,"Searches the full NVIDIA catalog by title. Results open in Browse.",dim);
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move"},{HintKind::glyph,Glyph::cross,nullptr,"Type"},{HintKind::glyph,Glyph::square,nullptr,"Backspace"},{HintKind::glyph,Glyph::triangle,nullptr,"Clear"}};
-    const Hint r[]={{HintKind::optionsMint,Glyph::options,nullptr,"Search"},{HintKind::glyph,Glyph::circle,nullptr,"Cancel"}};
-    hints(c,l,4,r,2);
-}
-
 void detail(Canvas& c, const Model& m) {
     const auto& cv=catalogFor(m.section,m.session,m.library);
     const unsigned focus=std::min(m.focus,cv.count-1);
     const Game& game=cv.games[focus];
-    eyebrow(c,left,205,m.section==Section::library?"FROM YOUR LIBRARY":"FROM THE CATALOG",muted);
-    const float room=1000;
-    const float size=fitTitle(game.title,room,128,72);
-    if(textWidth(Face::black,size,game.title,-0.03f)<=room)
-        drawText(c,Face::black,size,left,baselineIn(Face::black,size,242+(124-size)/2,size),game.title,ink,-0.03f);
-    else drawWrapped(c,Face::black,64,left,236,66,game.title,room,2,ink);
-    label(c,Face::extrabold,20,left,423,"STORE",dim,0.14f);
+    detailBackground(c,m,&game);
+    char text[256];
+    std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s",storeName(game.store),m.section==Section::library?"In your library":"From the catalog");
+    eyebrow(c,120,209,text,muted,15,860);
+    float size=88;
+    while(size>56&&drawWrapped(c,Face::black,size,0,0,size*1.02f,game.title,860,3,face,255,false)>2)size-=8;
+    const float pitch=std::round(size*1.02f);
+    const unsigned lines=drawWrapped(c,Face::black,size,120,222,pitch,game.title,860,2,face);
+    const float copyBottom=222+lines*pitch;
+    const float chipsTop=std::max(476.0f,copyBottom+40);
+    eyebrow(c,120,chipsTop+9,"Play on");
     unsigned siblings[16];
     const unsigned count=storeSiblings(cv,focus,siblings,16);
-    float x=left;
-    for(unsigned i=0;i<count&&x<left+room;++i) {
+    float x=120;
+    const float chipY=chipsTop+31;
+    for(unsigned i=0;i<count&&x<1300;++i) {
         const Game& entry=cv.games[siblings[i]];
-        const bool selected=siblings[i]==focus;
-        const float w=std::min(22+14+12+textWidth(Face::extrabold,24,entry.store)+22,320.0f);
-        if(selected){c.roundRect(x,452,w,56,28,raised);c.roundRectStroke(x,452,w,56,28,2,ink);}
-        else c.roundRectStroke(x,452,w,56,28,2,hairline);
-        c.roundRect(x+22,473,14,14,4,storeAccent(entry.store));
-        drawFitted(c,Face::extrabold,24,x+22+14+12,baselineIn(Face::extrabold,24,452,56),entry.store,w-70,selected?ink:muted);
-        x+=w+14;
+        const bool selected=siblings[i]==focus, owned=m.section==Section::library||entry.owned;
+        const char* ownership=owned?"Owned":"Not owned";
+        const float textW=std::max(textWidth(Face::black,19,storeName(entry.store)),textWidth(Face::bold,15,ownership));
+        const float w=14+42+14+textW+(selected?14+22:0)+24;
+        if(selected){c.roundRect(x,chipY,w,72,24,face,41);c.roundRectStroke(x,chipY,w,72,24,1.5f,face,120);}
+        else {c.roundRect(x,chipY,w,72,24,shell,179);c.roundRectStroke(x,chipY,w,72,24,1,face,seamAlpha);}
+        storeMark(c,x+14+21,chipY+36,42,entry.store);
+        label(c,Face::black,19,x+14+42+14,chipY+26,storeName(entry.store),face);
+        label(c,Face::bold,15,x+14+42+14,chipY+48,ownership,owned?mint:muted);
+        if(selected){const float cx=x+14+42+14+textW+14+11;c.line(cx-7,chipY+37,cx-2,chipY+42,3,mint);c.line(cx-2,chipY+42,cx+8,chipY+31,3,mint);}
+        x+=w+12;
     }
+    const float actionsY=chipY+72+34;
+    std::snprintf(text,sizeof(text),"Play on %s",storeName(game.store));
+    Button play{Glyph::cross,text,true};
+    const float pw=buttonWidth(play,24,34)+12;
+    actionButton(c,play,120,actionsY,72,pw,24,34);
+    focusFrame(c,120,actionsY,pw,72,36,140);
+    if(m.detailAction)actionButton(c,{Glyph::triangle,m.detailAction},120+pw+14,actionsY,72,0,20,30);
+    const float cardX=1352, cardY=470, cardW=472, ix=cardX+29, iw=cardW-58;
     const unsigned available=m.choiceCount, selected=std::min(m.choice,available?available-1:0);
-    label(c,Face::extrabold,20,left,567,"STREAM SETTINGS",dim,0.14f);
-    char position[32];std::snprintf(position,sizeof(position),"%u of %u",selected+1,available);
-    labelRight(c,Face::bold,20,left+room,567,position,dim);
-    const unsigned visible=4;
-    const unsigned first=available<=visible?0:std::min(selected>0?selected-1:0,available-visible);
-    for(unsigned i=first;i<available&&i<first+visible;++i) {
-        const float y=593+(i-first)*82.0f;
-        const bool on=i==selected;
-        if(on){c.roundRect(left,y,room,76,18,raised);c.roundRectStroke(left-4,y-4,room+8,84,22,4,mint);}
-        if(on){c.disc(left+28+11,y+38,11,mint);c.disc(left+28+11,y+38,6,raised);c.disc(left+28+11,y+38,5,mint);}
-        else c.ring(left+28+11,y+38,10,2,dim);
-        char name[48],spec[96];
-        drawFitted(c,Face::extrabold,30,left+70,baselineIn(Face::extrabold,30,y+20,36),i==0?"Your default":settingsName(m.choices[i],name,sizeof(name)),360,ink);
-        drawFitted(c,Face::mono,20,left+450,baselineIn(Face::mono,20,y+24,28),settingsSpec(m.choices[i],spec,sizeof(spec)),room-480,muted);
-    }
-    if(first>0){const float up[]={left+room-24,600,left+room-14,612,left+room-34,612};c.polygon(up,3,dim);}
-    if(first+visible<available){const float down[]={left+room-24,925,left+room-14,913,left+room-34,913};c.polygon(down,3,dim);}
-    const float px=1224, py=368, pw=600;
-    c.roundRect(px,py,pw,550,28,surface);
-    label(c,Face::extrabold,20,px+40,py+50,"THIS PS5",dim,0.14f);
-    label(c,Face::bold,26,px+40,py+96,"Video output",muted);
-    string_view output(m.output?m.output:"");
-    if(output.rfind("OUTPUT ",0)==0)output.remove_prefix(7);
-    drawWrapped(c,Face::mono,22,px+40,py+118,32,output,pw-80,2,ink);
-    label(c,Face::bold,26,px+40,py+214,"Requested stream",muted);
-    char name[48],spec[96];
     const StreamSettings& chosen=available?m.choices[selected]:m.defaults;
-    label(c,Face::mono,22,px+40,py+252,settingsName(chosen,name,sizeof(name)),ink);
-    drawFitted(c,Face::mono,20,px+40,baselineIn(Face::mono,20,py+270,28),settingsSpec(chosen,spec,sizeof(spec)),pw-80,muted);
-    c.roundRect(px+40,py+322,pw-80,2,1,hairline);
-    char play[96];std::snprintf(play,sizeof(play),"Play on %s",game.store);
-    c.roundRect(px+40,py+354,pw-80,88,44,mint);
-    const float tw=std::min(textWidth(Face::black,32,play),pw-80-110);
-    const float startX=px+40+(pw-80-(48+18+tw))/2;
-    c.disc(startX+24,py+398,24,mintInk);glyph(c,Glyph::cross,startX+24,py+398,ink);
-    drawFitted(c,Face::black,32,startX+48+18,baselineIn(Face::black,32,py+354,88),play,pw-80-110,mintInk);
-    drawWrapped(c,Face::semibold,22,px+40,py+464,30,"Your session starts in the cloud. You can wait in the queue or cancel at any time.",pw-80,2,muted);
-    const Hint l[]={{HintKind::glyph,Glyph::cross,nullptr,"Play"},{HintKind::glyph,Glyph::dpad,nullptr,count>1?"Store / settings":"Settings"},{HintKind::pill,Glyph::cross,"L1","Next"}};
-    const Hint r[]={{HintKind::glyph,Glyph::circle,nullptr,"Back"}};
-    hints(c,l,3,r,1);
+    char name[48],value[96];
+    const float cardH=29+18+16+76+16+5*34+6+46+29;
+    panel(c,cardX,cardY,cardW,cardH,32,true);
+    float y=cardY+29;
+    eyebrow(c,ix,y+9,"Next launch requests",muted,13);
+    labelRight(c,Face::extrabold,15,ix+iw,y+9,"Settings \xC2\xB7 Streaming",muted);
+    y+=18+16;
+    c.roundRect(ix,y,iw,76,22,face,18);
+    c.roundRectStroke(ix,y,iw,76,22,1,face,seamAlpha);
+    fitted(c,Face::black,21,ix+20,y+26,selected==0?string_view("Your default"):settingsName(chosen,name,sizeof(name)),iw-130,face);
+    std::snprintf(value,sizeof(value),"%u of %u \xC2\xB7 %s",selected+1,available,selected==0?settingsName(chosen,name,sizeof(name)).data():"this launch only");
+    fitted(c,Face::semibold,15,ix+20,y+52,value,iw-110,muted);
+    const float ax=ix+iw-36;
+    c.disc(ax,y+38,22,face,selected>0?255:60);
+    c.line(ax-6,y+33,ax,y+27,2.6f,faceText);c.line(ax,y+27,ax+6,y+33,2.6f,faceText);
+    c.line(ax-6,y+43,ax,y+49,2.6f,faceText);c.line(ax,y+49,ax+6,y+43,2.6f,faceText);
+    y+=76+16;
+    if(chosen.height>=2160)std::snprintf(value,sizeof(value),"4K \xC2\xB7 %d FPS",chosen.fps);
+    else std::snprintf(value,sizeof(value),"%dp \xC2\xB7 %d FPS",chosen.height,chosen.fps);
+    factRow(c,ix,y+12,iw,"Picture",value);y+=34;
+    factRow(c,ix,y+12,iw,"Codec",codecLabel(chosen));y+=34;
+    factRow(c,ix,y+12,iw,"Decoding",chosen.hardware()?"Hardware":"Software");y+=34;
+    std::snprintf(value,sizeof(value),"%d Mb/s max",chosen.bitrate_kbps/1000);
+    factRow(c,ix,y+12,iw,"Bitrate",value);y+=34;
+    factRow(c,ix,y+12,iw,"Output",outputLabel(m));y+=34+6;
+    drawWrapped(c,Face::semibold,15,ix,y,21,"The rig decides the final stream. These are requests, shown before launch only.",iw,2,muted);
+    const Hint left[]={{Glyph::circle,"Back"},{Glyph::dpad,count>1?"Store \xC2\xB7 stream":"Stream"}};
+    const Hint right[]={{Glyph::triangle,m.detailAction?m.detailAction:""},{Glyph::cross,play.text}};
+    chrome(c,m,"",false,left,2,m.detailAction?right:right+1,m.detailAction?2:1);
 }
 
-void step(Canvas& c, float y, int number, string_view text, int state) {
-    const float cx=left+22, cy=y+28;
-    if(state==2){c.disc(cx,cy,22,mint);glyph(c,Glyph::check,cx,cy,mintInk,22);}
-    else if(state==1)c.ring(cx,cy,20.5f,3,mint);
-    else c.ring(cx,cy,21,2,hairline);
-    if(state!=2){char n[4];std::snprintf(n,sizeof(n),"%d",number);const float w=textWidth(Face::black,20,n);label(c,Face::black,20,cx-w/2,cy,n,state==1?mint:dim);}
-    label(c,state==1?Face::black:Face::bold,30,left+64,cy,text,state==0?dim:ink);
+void rowFrame(Canvas& c, float x, float y, float w, float h, bool focused) {
+    if(focused) {
+        c.roundRect(x,y,w,h,24,face,26);
+        c.roundRectStroke(x-5,y-5,w+10,h+10,29,5,accent,102);
+        c.roundRectStroke(x,y,w,h,24,3,face);
+    } else c.roundRect(x+18,y+h-1,w-36,1,0,face,23);
 }
-void progress(Canvas& c, const Model& m) {
-    const auto& cv=m.session;
-    const bool connecting=m.screen==Screen::connecting;
-    const Game* game=*cv.current.title?&cv.current:nullptr;
-    char title[256];
-    if(game)std::snprintf(title,sizeof(title),"%s \xC2\xB7 %s ON %s",connecting?"CONNECTING":"STARTING",game->title,game->store);
-    else std::snprintf(title,sizeof(title),"%s",connecting?"CONNECTING":"STARTING");
-    for(char* p=title;*p;++p)if(*p>='a'&&*p<='z')*p=static_cast<char>(*p-32);
-    drawFitted(c,Face::extrabold,22,left,baselineIn(Face::extrabold,22,256,24),title,1060,mint,0.14f);
-    const bool queued=cv.state==CloudState::queued;
-    const char* head=connecting?"Connecting stream":queued&&cv.queuePosition>=0?"You\xE2\x80\x99re in line":queued&&cv.setupStep>=0?"Preparing your game":queued?"Almost ready":"Starting your session";
-    const char* text=connecting?"Your cloud rig is ready. The picture appears as soon as the first video frame arrives.":
-        queued&&cv.queuePosition>=0?"NVIDIA is finding a cloud rig for your session. This screen moves on by itself, so you can put the controller down.":
-        queued?"NVIDIA is getting the server ready. This screen moves on by itself.":"Asking NVIDIA for a cloud session. This usually takes a few seconds.";
-    const bool dial=queued&&(cv.queuePosition>=0||cv.setupStep>=0);
-    const float headRoom=dial?1100:width;
-    const float headSize=fitTitle(head,headRoom,112,72,0);
-    float y=headline(c,headSize,headSize,296+(112-headSize),head,headRoom,1);
-    y=body(c,y+20,text,880,2);
-    const char* second=queued&&cv.queuePosition<0&&cv.setupStep>=0?"Server preparing game":queued?"Waiting in queue":"Waiting for a server";
-    y+=40;
-    const int phase=connecting?3:queued?2:1;
-    step(c,y,1,"Session requested",phase>1?2:1);
-    step(c,y+66,2,second,phase>2?2:phase==2?1:0);
-    step(c,y+132,3,"Connecting stream",phase==3?1:0);
-    step(c,y+198,4,"Playing",0);
-    if(dial) {
-        const float cx=1564, cy=540;
-        c.ring(cx,cy,258,3,hairline);
-        const bool queue=cv.queuePosition>=0;
-        const char* heading=queue?"QUEUE POSITION":"SETUP STEP";
-        const float hw=textWidth(Face::extrabold,22,heading,0.14f);
-        label(c,Face::extrabold,22,cx-hw/2,cy-140,heading,muted,0.14f);
-        char number[16];std::snprintf(number,sizeof(number),"%d",queue?cv.queuePosition:cv.setupStep);
-        const float size=std::strlen(number)>3?150:240;
-        const float nw=textWidth(Face::black,size,number,-0.04f);
-        drawText(c,Face::black,size,cx-nw/2,baselineIn(Face::black,size,cy-size/2,size),number,mint,-0.04f);
-        const float uw=textWidth(Face::bold,24,"updates live");
-        label(c,Face::bold,24,cx-uw/2,cy+138,"updates live",muted);
-    }
-    drawFitted(c,Face::mono,22,left,baselineIn(Face::mono,22,m.streaming?hintY-86:hintY-16,32),cv.message,980,dim);
-    const Hint l[]={{HintKind::glyph,Glyph::touch,nullptr,"Mouse"},{HintKind::combo,Glyph::triangle,nullptr,"Keyboard"},{HintKind::combo,Glyph::square,nullptr,"Back"}};
-    const Hint r[]={{HintKind::hold,Glyph::options,nullptr,m.streaming?"End session":"Cancel session"}};
-    hints(c,l,m.streaming?3:0,r,1);
-}
-
-void keyGrid(Canvas& c, const StreamKeyboard& k, bool ready, float x0, float y0, float span, float keyH, float rowPitch, Color keyColor) {
-    const float pitch=span/StreamKeyboard::units, big=keyH*0.43f, small=keyH*0.31f;
-    for(unsigned i=0;i<StreamKeyboard::count;++i) {
-        const auto& key=StreamKeyboard::keys[i];
-        const float x=x0+StreamKeyboard::column(i)*pitch, y=y0+StreamKeyboard::row(i)*rowPitch, w=key.width*pitch-12;
-        const bool focused=i==k.selected, latched=k.latched(i);
-        if(focused)c.roundRectStroke(x-9,y-9,w+18,keyH+18,25,4,mint);
-        c.roundRect(x,y,w,keyH,16,focused?mint:latched?mix(keyColor,mint,0.24f):keyColor);
-        const Color color=focused?mintInk:latched?mint:ready?ink:dim;
-        const float cy=y+keyH/2;
-        if(key.vk>=0x25&&key.vk<=0x28) {
-            const float cx=x+w/2, a=keyH*0.15f, dx=key.vk==0x25?-1.0f:key.vk==0x27?1.0f:0.0f, dy=key.vk==0x26?-1.0f:key.vk==0x28?1.0f:0.0f;
-            c.line(cx-dx*a,cy-dy*a,cx+dx*a,cy+dy*a,4,color);
-            c.line(cx+dx*a,cy+dy*a,cx+dx*a*0.25f-dy*a*0.75f,cy+dy*a*0.25f+dx*a*0.75f,4,color);
-            c.line(cx+dx*a,cy+dy*a,cx+dx*a*0.25f+dy*a*0.75f,cy+dy*a*0.25f-dx*a*0.75f,4,color);
-            continue;
-        }
-        const char* name=k.label(i);
-        const bool word=name[1]!=0;
-        const Face face=word?Face::bold:Face::extrabold;
-        const float size=word?small:big, kw=textWidth(face,size,name);
-        label(c,face,size,x+w/2-kw/2,cy,name,color);
-    }
-}
-void streamKeyboard(Canvas& c, const Model& m) {
-    const auto& k=m.keyboard;
-    char tag[192];
-    if(*m.session.current.title)std::snprintf(tag,sizeof(tag),"KEYBOARD \xC2\xB7 TYPING INTO %s",m.session.current.title);
-    else std::snprintf(tag,sizeof(tag),"KEYBOARD \xC2\xB7 TYPING INTO YOUR GAME");
-    for(char* p=tag;*p;++p)if(*p>='a'&&*p<='z')*p=static_cast<char>(*p-32);
-    drawFitted(c,Face::extrabold,22,left,baselineIn(Face::extrabold,22,193,24),tag,width,mint,0.14f);
-    c.roundRect(left,240,width,120,24,mint);
-    c.roundRect(left,240,width,116,24,surface);
-    char state[48]="NO MODIFIERS";
-    std::size_t at=0;
-    for(const auto& [on,name]:{std::pair{k.shift,"SHIFT"},std::pair{k.caps,"CAPS LOCK"},std::pair{k.ctrl,"CTRL"},std::pair{k.alt,"ALT"}})
-        if(on)at+=std::snprintf(state+at,sizeof(state)-at,"%s%s",at?" + ":"",name);
-    const float stateW=labelRight(c,Face::extrabold,22,right-36,300,state,at?mint:dim,0.14f);
-    drawFitted(c,Face::black,56,left+36,baselineIn(Face::black,56,300-40,80),m.inputReady?"Keys go straight to your game":"Waiting for game input",
-        width-72-stateW-48,m.inputReady?muted:amber,-0.01f);
-    keyGrid(c,k,m.inputReady,left,396,width,84,96,surface);
-    label(c,Face::semibold,24,left,912,m.inputReady?"The picture returns when you close the keyboard. Your game and audio keep running.":
-        "Key presses are ignored until the game\xE2\x80\x99s input channel opens. The picture returns when you close the keyboard.",dim);
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move"},{HintKind::glyph,Glyph::cross,nullptr,"Press key"},
-        {HintKind::glyph,Glyph::square,nullptr,"Backspace"},{HintKind::glyph,Glyph::triangle,nullptr,"Space"},{HintKind::pill,Glyph::cross,"L1","Shift"}};
-    const Hint r[]={{HintKind::glyph,Glyph::circle,nullptr,"Back to game"}};
-    hints(c,l,5,r,1);
-}
-
-void overlayHints(Canvas& c, float x, float cy, const Hint* items, unsigned count) {
-    for(unsigned i=0;i<count;++i){drawHint(c,items[i],x,cy);x+=hintWidth(items[i])+32;}
-}
-float hudItem(Canvas& c, float x, float cy, Glyph icon, const char* key, const char* text) {
-    if(key)x+=pill(c,key,x,cy)+10;else x+=well(c,icon,x,cy)+10;
-    return x+label(c,Face::bold,22,x,cy,text,ink)+28;
-}
-float hudWidth(Glyph, const char* key, const char* text) {return (key?pillWidth(key):44)+10+textWidth(Face::bold,22,text)+28;}
-}
-void renderOverlay(Canvas& c, const Overlay& o) noexcept {
-    loadFonts();
-    const float y=48, h=72, cy=y+h/2;
-    c.roundRect(left,y,width,h,24,surface);
-    c.roundRectStroke(left,y,width,h,24,2,hairline);
-    const auto& k=o.keyboard;
-    const char* mode=!o.inputReady?"WAITING FOR GAME INPUT":k.open?(o.launcher?"KEYBOARD \xC2\xB7 MOUSE PAUSED":"KEYBOARD"):"LAUNCHER MOUSE";
-    const Color accent=o.inputReady?mint:amber;
-    c.disc(left+28,cy,6,accent);
-    label(c,Face::extrabold,20,left+46,cy,mode,accent,0.14f);
-    struct Item { Glyph icon; const char* key; const char* text; };
-    static const char* speeds[]={"Move \xC2\xB7 Slow","Move \xC2\xB7 Normal","Move \xC2\xB7 Fast"};
-    Item items[8];unsigned count=0;
-    if(!k.open) {
-        items[count++]={Glyph::stick,nullptr,speeds[std::min(o.speed,2U)]};
-        items[count++]={Glyph::cross,"R2","Left click"};
-        items[count++]={Glyph::cross,"L2","Right click"};
-        items[count++]={Glyph::dpad,nullptr,"Scroll"};
-        items[count++]={Glyph::square,nullptr,"Speed"};
-        items[count++]={Glyph::triangle,nullptr,"Keyboard"};
-    } else items[count++]={Glyph::circle,nullptr,o.launcher?"Back to mouse":"Close"};
-    float total=0;for(unsigned i=0;i<count;++i)total+=hudWidth(items[i].icon,items[i].key,items[i].text);
-    const char* exit=o.launcher?"R3":nullptr;
-    const float exitW=48+10+textWidth(Face::black,18,"+")+10+(exit?pillWidth(exit):44)+10+textWidth(Face::bold,22,o.launcher?"Exit":"Close");
-    float x=right-24-exitW-total;
-    for(unsigned i=0;i<count;++i)x=hudItem(c,x,cy,items[i].icon,items[i].key,items[i].text);
-    x+=optionsPill(c,x,cy)+10;x+=label(c,Face::black,18,x,cy,"+",dim)+10;
-    x+=(exit?pill(c,exit,x,cy):well(c,Glyph::triangle,x,cy))+10;
-    label(c,Face::bold,22,x,cy,o.launcher?"Exit":"Close",ink);
-    if(!k.open)return;
-    const float ph=500, py=1080-40-ph;
-    c.roundRect(left,py,width,ph,28,surface);
-    c.roundRectStroke(left,py,width,ph,28,2,hairline);
-    label(c,Face::extrabold,20,left+28,py+38,o.inputReady?"KEYBOARD \xC2\xB7 US QWERTY \xC2\xB7 TYPED KEYS ARE NOT SHOWN":"KEY PRESSES ARE IGNORED UNTIL THE GAME\xE2\x80\x99S INPUT CHANNEL OPENS",accent,0.14f);
-    char state[48]="";std::size_t at=0;
-    for(const auto& [on,name]:{std::pair{k.shift,"SHIFT"},std::pair{k.caps,"CAPS LOCK"},std::pair{k.ctrl,"CTRL"},std::pair{k.alt,"ALT"}})
-        if(on)at+=std::snprintf(state+at,sizeof(state)-at,"%s%s",at?" + ":"",name);
-    if(at)labelRight(c,Face::extrabold,18,right-28,py+38,state,mint,0.14f);
-    keyGrid(c,k,o.inputReady,left+16,py+70,width-20,62,72,raised);
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move"},{HintKind::glyph,Glyph::cross,nullptr,"Press key"},
-        {HintKind::glyph,Glyph::square,nullptr,"Backspace"},{HintKind::glyph,Glyph::triangle,nullptr,"Space"},
-        {HintKind::pill,Glyph::cross,"L1","Shift"},{HintKind::glyph,Glyph::circle,nullptr,o.launcher?"Back to mouse":"Close"}};
-    overlayHints(c,left+28,py+ph-36,l,6);
-}
-namespace {
-void failure(Canvas& c, const Model& m) {
-    const auto& cv=m.session;
-    const Screen s=m.screen;
-    const char* tag=s==Screen::streamEnded?"STREAM ENDED":s==Screen::cleanupFailed?"SESSION STILL RUNNING":"COULDN\xE2\x80\x99T START";
-    const char* head=s==Screen::streamEnded?"The connection to your game dropped":s==Screen::cleanupFailed?"We couldn\xE2\x80\x99t end the cloud session":"The game didn\xE2\x80\x99t start";
-    const char* text=s==Screen::streamEnded?"OpenNOW stopped the cloud session, so nothing keeps running on your account. You can try again right away.":
-        s==Screen::cleanupFailed?"It may still be running on your account. End it before starting another game.":
-        "The cloud session could not be started or confirmed. You can try again or go back.";
-    warningIcon(c,left+18,314,coral);
-    eyebrow(c,left+52,314,tag,coral);
-    float y=headline(c,104,108,354,head,1300,2);
-    y=body(c,y+24,text,980,2);
-    char second[256]{};
-    if(*cv.current.title) {
-        char name[48];
-        std::snprintf(second,sizeof(second),"%s \xC2\xB7 %s \xC2\xB7 %s",cv.current.title,cv.current.store,settingsName(m.launch,name,sizeof(name)).data());
-    }
-    detailCard(c,y+28,*cv.message?cv.message:"No details reported",second,coral);
-    float x=left;
-    if(s==Screen::streamEnded){x+=button(c,x,944,Glyph::cross,"Try again",true)+20;button(c,x,944,Glyph::square,"Back to games",false);}
-    else if(s==Screen::launchFailed){x+=button(c,x,944,Glyph::cross,"Try again",true)+20;button(c,x,944,Glyph::circle,"Back",false);return;}
-    else holdButton(c,x,944,"End session");
-    const float closeW=16+48+16+textWidth(Face::black,28,"Close app")+36;
-    button(c,right-closeW,944,Glyph::circle,"Close app",false);
-}
-
-void settingsRow(Canvas& c, float x, float y, float w, float h, bool focused) {
-    c.roundRect(x,y,w,h,22,surface);
-    if(focused)c.roundRectStroke(x-4,y-4,w+8,h+8,26,4,mint);
-}
-void infoRow(Canvas& c, float x, float y, float w, string_view key, string_view value, string_view sub, float h=116) {
-    c.roundRect(x,y,w,h,22,surface);
-    label(c,Face::extrabold,28,x+32,y+h/2-14,key,ink);
-    label(c,Face::semibold,20,x+32,y+h/2+22,sub,dim);
-    const float vw=std::min(textWidth(Face::mono,24,value),w-420);
-    drawFitted(c,Face::mono,24,x+w-32-vw,baselineIn(Face::mono,24,y+h/2-18,36),value,w-420,ink);
+void rowText(Canvas& c, float x, float y, float h, string_view title, string_view description, Color descColor=muted, bool dirty=false, Color titleColor=face, float maxWidth=700) {
+    const bool desc=!description.empty();
+    const float top=y+(h-(desc?51:26))/2;
+    const float tw=fitted(c,Face::black,21,x+22,top+13,title,maxWidth,titleColor);
+    if(dirty)c.disc(x+22+tw+12,top+13,5,yellow);
+    if(desc)fitted(c,Face::semibold,16,x+22,top+29+11,description,maxWidth,descColor);
 }
 struct Option { const char* text; bool on, disabled; };
 void unavailableIcon(Canvas& c, float cx, float cy, Color color) {c.ring(cx,cy,7,2.2f,color);c.line(cx-5,cy+5,cx+5,cy-5,2.2f,color);}
-float segmented(Canvas& c, float rightX, float cy, const Option* options, unsigned count) {
-    float widths[4],total=8+4*(count-1.0f);
-    for(unsigned i=0;i<count;++i){widths[i]=36+textWidth(Face::extrabold,20,options[i].text)+(options[i].disabled?24:0);total+=widths[i];}
+float segments(Canvas& c, float rightX, float cy, const Option* options, unsigned count) {
+    float widths[4],total=6*(count-1.0f);
+    for(unsigned i=0;i<count;++i){widths[i]=36+textWidth(Face::black,16,options[i].text)+(options[i].disabled?22:0);total+=widths[i];}
     float x=rightX-total;
-    c.roundRect(x,cy-24,total,48,24,raised);
-    x+=4;
     for(unsigned i=0;i<count;++i) {
         const auto& o=options[i];
-        if(o.on)c.roundRect(x,cy-20,widths[i],40,20,ink);
+        if(o.on)c.roundRect(x,cy-22,widths[i],44,22,face);
+        else c.roundRectStroke(x,cy-22,widths[i],44,22,1,face,46);
         float tx=x+18;
-        if(o.disabled){unavailableIcon(c,tx+8,cy,dim);tx+=24;}
-        label(c,Face::extrabold,20,tx,cy,o.text,o.on?ground:o.disabled?dim:muted);
-        x+=widths[i]+4;
+        if(o.disabled){unavailableIcon(c,tx+7,cy,o.on?faceText:dim);tx+=22;}
+        label(c,Face::black,16,tx,cy,o.text,o.on?faceText:o.disabled?dim:face);
+        x+=widths[i]+6;
     }
     return total;
 }
-float stepper(Canvas& c, float rightX, float cy, string_view text) {
-    const float tw=std::max(textWidth(Face::black,22,text),100.0f), w=8+36+8+tw+8+36+8, x=rightX-w;
-    c.roundRect(x,cy-24,w,48,24,raised);
+void toggle(Canvas& c, float rightX, float cy, bool on) {
+    const float x=rightX-64;
+    c.roundRect(x,cy-18,64,36,18,on?mint:face,on?255:46);
+    c.disc(x+(on?32:4)+14,cy,14,face);
+}
+void chevron(Canvas& c, float cx, float cy, int direction, Color color) {
+    const float d=4.5f*static_cast<float>(direction);
+    c.line(cx-d,cy-8,cx+d,cy,3,color);c.line(cx+d,cy,cx-d,cy+8,3,color);
+}
+float cycler(Canvas& c, float rightX, float cy, string_view text, bool focused, int index=-1, unsigned count=0) {
+    const float w=44+6+190+6+44, x=rightX-w;
     for(int side=0;side<2;++side) {
-        const float cx=side?x+w-8-18:x+8+18;
-        c.disc(cx,cy,18,hairline);
-        const float d=side?3.5f:-3.5f;
-        c.line(cx-d,cy-7,cx+d,cy,3,ink);c.line(cx+d,cy,cx-d,cy+7,3,ink);
+        const float cx=side?rightX-22:x+22;
+        if(focused)c.disc(cx,cy,22,face);
+        else c.ring(cx,cy,21.5f,1,face,56);
+        chevron(c,cx,cy,side?1:-1,focused?faceText:face);
     }
-    const float vw=textWidth(Face::black,22,text);
-    label(c,Face::black,22,x+w/2-vw/2,cy,text,ink);
+    const bool dots=count>1&&count<=12;
+    labelCenter(c,Face::black,20,x+50+95,dots?cy-7:cy,text,face);
+    if(dots) {
+        float dw=0;for(unsigned i=0;i<count;++i)dw+=(static_cast<int>(i)==index?18:6)+(i?5:0);
+        float dx=x+50+95-dw/2;
+        for(unsigned i=0;i<count;++i){const bool on=static_cast<int>(i)==index;c.roundRect(dx,cy+12,on?18:6,6,3,face,on?255:90);dx+=(on?18:6)+5;}
+    }
     return w;
 }
-float editValue(Canvas& c, float rightX, float cy, string_view text) {
-    const float pw=8+30+8+textWidth(Face::extrabold,18,"Edit")+14, px=rightX-pw;
-    c.roundRect(px,cy-20,pw,40,20,raised);
-    c.disc(px+8+15,cy,15,hairline);glyph(c,Glyph::cross,px+8+15,cy,ink,18);
-    label(c,Face::extrabold,18,px+8+30+8,cy,"Edit",ink);
-    const float tw=textWidth(Face::mono,24,text);
-    label(c,Face::mono,24,px-14-tw,cy,text,ink);
-    return pw+14+tw;
+float valuePill(Canvas& c, float rightX, float cy, string_view text, bool danger, bool enabled=true) {
+    const float w=std::min(460.0f,textWidth(Face::black,18,text)+66), x=rightX-w;
+    const Color ink=!enabled?dim:danger?coral:face;
+    if(danger){c.roundRect(x,cy-24,w,48,24,coral,26);c.roundRectStroke(x,cy-24,w,48,24,1.5f,coral,153);}
+    else {c.roundRect(x,cy-24,w,48,24,face,26);c.roundRectStroke(x,cy-24,w,48,24,1,face,46);}
+    fitted(c,Face::black,18,x+20,cy,text,w-66,ink);
+    chevron(c,rightX-25,cy,1,ink);
+    return w;
 }
-void streamPane(Canvas& c, const Model& m, float x) {
+float infoValue(Canvas& c, float rightX, float cy, string_view text, Color color=muted, float maxWidth=560) {
+    const float w=std::min(textWidth(Face::black,18,text),maxWidth);
+    fitted(c,Face::black,18,rightX-w,cy,text,maxWidth,color);
+    return w;
+}
+
+constexpr float rowsX=515, rowsW=1274, rowsTop=213;
+struct DraftStatus { const char* title; const char* body; Color tone; char buffer[96]; };
+DraftStatus draftStatus(const Model& m) {
+    DraftStatus s{};
+    const unsigned dirty=changedRows(m.draft,m.defaults);
+    const char* problem=settingsProblem(m.draft,m.draftAvailable);
+    if(dirty&&problem){s.title="Can\xE2\x80\x99t save yet";s.body=problem;s.tone=coral;}
+    else if(dirty&&m.adjusted){std::snprintf(s.buffer,sizeof(s.buffer),"%u setting%s adjusted",m.adjusted,m.adjusted==1?"":"s");s.title=s.buffer;s.body="Changed to fit Software decoding. Kept until you Save or Revert.";s.tone=yellow;}
+    else if(dirty){std::snprintf(s.buffer,sizeof(s.buffer),"%u unsaved change%s",rowCount(dirty),rowCount(dirty)==1?"":"s");s.title=s.buffer;s.body="Kept until you Save or Revert, even if you leave.";s.tone=yellow;}
+    else if(m.settings.saveError){std::snprintf(s.buffer,sizeof(s.buffer),"Couldn\xE2\x80\x99t save on this PS5 \xC2\xB7 error %d",m.settings.saveError);s.title="Not saved";s.body=s.buffer;s.tone=coral;}
+    else if(m.settings.savedUnavailable){s.title="Saved choice not qualified";s.body="It doesn\xE2\x80\x99t work on this PS5 or output now. Using the best available.";s.tone=yellow;}
+    else if(m.settings.loadCorrupt||m.settings.loadUnreadable){s.title="Saved settings ignored";s.body="They couldn\xE2\x80\x99t be read. Using the best available.";s.tone=yellow;}
+    else {s.title=m.settings.saved?"Saved on this PS5":"Best available";s.body=m.settings.saved?"Used when you press Play.":"Used when you press Play. Not saved yet.";s.tone=mint;}
+    return s;
+}
+void draftCard(Canvas& c, const Model& m) {
+    const StreamSettings& d=m.draft;
+    const float x=119, y=508, w=314, h=392, ix=x+22, iw=w-44;
+    c.roundRect(x,y,w,h,26,face,10);
+    c.roundRectStroke(x,y,w,h,26,1,face,seamAlpha);
+    char text[96];
+    float at=y+30;
+    eyebrow(c,ix,at,"Requested",accent,13);at+=30;
+    std::snprintf(text,sizeof(text),"%d\xC3\x97%d \xC2\xB7 %d FPS",d.width,d.height,d.fps);
+    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+    std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s \xC2\xB7 %d Mb/s",d.tenBit()?"HEVC":"H.264",d.hdr()?"HDR":"SDR",d.bitrate_kbps/1000);
+    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+    fitted(c,Face::mono,15,ix,at,d.hardware()?"Hardware decoding":"Software decoding",iw,face);at+=26;
+    std::snprintf(text,sizeof(text),"%s audio",d.audio_mode==audio::Mode::automatic?"Auto":d.audio_mode==audio::Mode::stereo?"Stereo":audio::modeLabel(d.audio_mode));
+    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=22;
+    rule(c,ix,at,iw);at+=26;
+    eyebrow(c,ix,at,"This PS5 output",muted,13);at+=14;
+    at+=drawWrapped(c,Face::mono,14,ix,at,22,outputLabel(m),iw,2,muted)*22.0f+12;
+    const auto s=draftStatus(m);
+    c.roundRect(ix-8,at,iw+16,y+h-14-at,18,s.tone,20);
+    c.disc(ix+8,at+24,5,s.tone);
+    fitted(c,Face::black,18,ix+22,at+24,s.title,iw-26,face);
+    drawWrapped(c,Face::semibold,15,ix+4,at+42,20,s.body,iw-8,3,muted);
+}
+void streamPane(Canvas& c, const Model& m) {
     const StreamSettings& d=m.draft;
     const unsigned dirty=changedRows(d,m.defaults);
     const char* problem=settingsProblem(d,m.draftAvailable);
     const bool anyHardware=m.caps.h264Hardware||m.caps.hevcSdr||m.caps.hevcHdr;
-    const float rw=800;
     char text[96],name[48];
     for(unsigned i=0;i<static_cast<unsigned>(StreamRow::count);++i) {
         const auto row=static_cast<StreamRow>(i);
-        const float y=360+i*72.0f, cy=y+32, rx=x+rw-12;
-        settingsRow(c,x,y,rw,64,m.settingsContent&&m.settingsRow==i);
-        const char* head="";const char* sub="";Color subColor=dim;
+        const float h=80, y=rowsTop+i*(h+4), cy=y+h/2, rx=rowsX+rowsW-22;
+        const bool focused=m.settingsContent&&m.settingsRow==i;
+        rowFrame(c,rowsX,y,rowsW,h,focused);
+        const char* head="";const char* sub="";Color subColor=muted;
         switch(row) {
         case StreamRow::preset: {
             head="Preset";
-            bool preset=false;
-            for(unsigned p=0;p<static_cast<unsigned>(StreamProfile::count);++p)preset=preset||presetFor(static_cast<StreamProfile>(p),d)==d;
+            int index=-1;
+            for(unsigned p=1;p<m.choiceCount;++p){char a[48],b[48];if(settingsName(m.choices[p],a,sizeof(a))==settingsName(d,b,sizeof(b)))index=static_cast<int>(p-1);}
             std::snprintf(text,sizeof(text),"%u qualified presets \xC2\xB7 edits make it Custom",m.choiceCount?m.choiceCount-1:0);
             sub=text;
-            stepper(c,rx,cy,preset?settingsName(d,name,sizeof(name)):string_view("Custom"));
+            cycler(c,rx,cy,isPreset(d)?settingsName(d,name,sizeof(name)):string_view("Custom"),focused,index,m.choiceCount?m.choiceCount-1:0);
             break;
         }
         case StreamRow::decoding: {
             head="Decoding";
             sub=!anyHardware?"Hardware decoding isn\xE2\x80\x99t qualified on this PS5":d.hardware()?"PS5 video decoder":"CPU decoding, H.264 only";
-            if(!anyHardware)subColor=amber;
+            if(!anyHardware)subColor=yellow;
             const Option o[]={{"Hardware accelerated",d.hardware(),!anyHardware},{"Software",!d.hardware(),false}};
-            segmented(c,rx,cy,o,2);
+            segments(c,rx,cy,o,2);
             break;
         }
         case StreamRow::codec: {
             head="Codec";
             const bool hevc=m.caps.hevcSdr||m.caps.hevcHdr;
             sub=!d.hardware()?"Software decodes H.264 only":!hevc?"HEVC isn\xE2\x80\x99t qualified on this PS5":"AV1 is unavailable in this port";
-            if(!d.hardware()||!hevc)subColor=amber;
+            if(!d.hardware()||!hevc)subColor=yellow;
             const Option o[]={{"H.264",!d.tenBit(),d.hardware()&&!m.caps.h264Hardware},{"HEVC",d.tenBit(),!d.hardware()||!hevc},{"AV1",false,true}};
-            segmented(c,rx,cy,o,3);
+            segments(c,rx,cy,o,3);
             break;
         }
         case StreamRow::resolution:
             head="Resolution";
-            sub=d.hardware()?"Even sizes, 320\xC3\x97" "180 to 3840\xC3\x97" "2160":"Software: up to 1920\xC3\x97" "1080";
-            if(!d.hardware())subColor=amber;
+            sub=d.hardware()?"Even sizes, 320\xC3\x97" "180 to 3840\xC3\x97" "2160 \xC2\xB7 Cross types an exact size":"Software: up to 1920\xC3\x97" "1080 \xC2\xB7 Cross types an exact size";
+            if(!d.hardware())subColor=yellow;
             if(validateSettings(d)==SettingsError::dimensions){sub=problem;subColor=coral;}
             std::snprintf(text,sizeof(text),"%d \xC3\x97 %d",d.width,d.height);
-            editValue(c,rx,cy,text);
+            cycler(c,rx,cy,text,focused);
             break;
         case StreamRow::fps:
             head="Frame rate";
             sub=d.hardware()?"Any whole number, 30 to 120":"Software: 30 to 60";
-            if(!d.hardware())subColor=amber;
+            if(!d.hardware())subColor=yellow;
             if(validateSettings(d)==SettingsError::fps){sub=problem;subColor=coral;}
             std::snprintf(text,sizeof(text),"%d FPS",d.fps);
-            stepper(c,rx,cy,text);
+            cycler(c,rx,cy,text,focused);
             break;
         case StreamRow::bitrate:
             head="Bitrate limit";
             sub="4 to 100 Mb/s \xC2\xB7 the cloud may send less";
             std::snprintf(text,sizeof(text),"%d Mb/s",d.bitrate_kbps/1000);
-            stepper(c,rx,cy,text);
+            cycler(c,rx,cy,text,focused);
             break;
         case StreamRow::hdr: {
             head="HDR";
             sub=!d.tenBit()?"Needs HEVC and hardware decoding":!m.caps.hevcHdr?"HDR isn\xE2\x80\x99t qualified on this PS5":"HEVC Main10 with HDR10";
-            if(d.tenBit()&&!m.caps.hevcHdr)subColor=amber;
+            if(d.tenBit()&&!m.caps.hevcHdr)subColor=yellow;
             const Option o[]={{"Off",!d.hdr(),d.tenBit()&&!m.caps.hevcSdr},{"On",d.hdr(),!d.tenBit()||!m.caps.hevcHdr}};
-            segmented(c,rx,cy,o,2);
+            segments(c,rx,cy,o,2);
             break;
         }
-        case StreamRow::reset: {
+        case StreamRow::reset:
             head="Reset to best available";
             sub="Forgets the saved default. Your NVIDIA login stays.";
-            const float bw=44+12+textWidth(Face::bold,24,"Reset");
-            well(c,Glyph::cross,rx-bw,cy);
-            label(c,Face::bold,24,rx-bw+56,cy,"Reset",ink);
+            valuePill(c,rx,cy,"Reset",true);
             break;
-        }
         case StreamRow::count: break;
         }
-        const float hw=label(c,Face::extrabold,24,x+28,y+20,head,ink);
-        if(dirty&rowBit(row))c.disc(x+28+hw+12,y+20,5,amber);
-        drawFitted(c,Face::semibold,18,x+28,baselineIn(Face::semibold,18,y+32,24),sub,430,subColor);
+        rowText(c,rowsX,y,h,head,sub,subColor,dirty&rowBit(row));
     }
-    const float px=x+rw+32, pw=right-px, py=360, ph=568;
-    c.roundRectStroke(px,py,pw,ph,22,2,hairline);
-    label(c,Face::extrabold,18,px+24,py+36,"REQUESTED",mint,0.14f);
-    std::snprintf(text,sizeof(text),"%d \xC3\x97 %d \xC2\xB7 %d FPS",d.width,d.height,d.fps);
-    label(c,Face::mono,22,px+24,py+72,text,ink);
-    std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s \xC2\xB7 %d Mb/s max",d.tenBit()?"HEVC":"H.264",d.hdr()?"HDR":"SDR",d.bitrate_kbps/1000);
-    label(c,Face::mono,22,px+24,py+106,text,ink);
-    label(c,Face::mono,22,px+24,py+140,d.hardware()?"Hardware decoding":"Software decoding",ink);
-    std::snprintf(text,sizeof(text),"%s audio",d.audio_mode==audio::Mode::automatic?"Auto":d.audio_mode==audio::Mode::stereo?"Stereo":audio::modeLabel(d.audio_mode));
-    label(c,Face::mono,22,px+24,py+174,text,ink);
-    c.roundRect(px+24,py+204,pw-48,2,1,hairline);
-    label(c,Face::extrabold,18,px+24,py+238,"THIS PS5 OUTPUT",dim,0.14f);
-    string_view output(m.output?m.output:"");
-    if(output.rfind("OUTPUT ",0)==0)output.remove_prefix(7);
-    drawWrapped(c,Face::mono,20,px+24,py+256,30,output,pw-48,2,muted);
-    drawWrapped(c,Face::semibold,19,px+24,py+320,26,"The actual stream can differ. The game, your plan and the network decide.",pw-48,2,dim);
-    const char* title;const char* body;Color accent;char status[96];
-    if(dirty&&problem){title="Can\xE2\x80\x99t save yet";body=problem;accent=coral;}
-    else if(dirty&&m.adjusted){std::snprintf(status,sizeof(status),"%u setting%s adjusted",m.adjusted,m.adjusted==1?"":"s");title=status;body="Changed to fit Software decoding. Kept until you Save or Revert.";accent=amber;}
-    else if(dirty){std::snprintf(status,sizeof(status),"%u unsaved change%s",rowCount(dirty),rowCount(dirty)==1?"":"s");title=status;body="Kept until you Save or Revert, even if you leave.";accent=amber;}
-    else if(m.settings.saveError){std::snprintf(status,sizeof(status),"Couldn\xE2\x80\x99t save on this PS5 \xC2\xB7 error %d",m.settings.saveError);title="Not saved";body=status;accent=coral;}
-    else if(m.settings.savedUnavailable){title="Saved choice not qualified";body="It doesn\xE2\x80\x99t work on this PS5 or output now. Using the best available.";accent=amber;}
-    else if(m.settings.loadCorrupt||m.settings.loadUnreadable){title="Saved settings ignored";body="They couldn\xE2\x80\x99t be read. Using the best available.";accent=amber;}
-    else {title=m.settings.saved?"Saved on this PS5":"Best available";body=m.settings.saved?"Used when you press Play.":"Used when you press Play. Not saved yet.";accent=mint;}
-    const float sy=py+ph-24-156;
-    c.roundRect(px+24,sy,pw-48,156,18,raised);
-    c.disc(px+24+24,sy+36,6,accent);
-    drawFitted(c,Face::extrabold,24,px+24+42,baselineIn(Face::extrabold,24,sy+20,32),title,pw-48-60,ink);
-    drawWrapped(c,Face::semibold,20,px+24+20,sy+64,26,body,pw-48-40,3,muted);
+}
+void displayPane(Canvas& c, const Model& m) {
+    float y=rowsTop;
+    const auto info=[&](const char* title,const char* desc,string_view value,float h=84){
+        rowFrame(c,rowsX,y,rowsW,h,false);
+        rowText(c,rowsX,y,h,title,desc,muted,false,face,560);
+        infoValue(c,rowsX+rowsW-22,y+h/2,value,face,600);
+        y+=h+4;
+    };
+    info("Video output","VideoOut mode chosen at startup",outputLabel(m));
+    char codecs[96]{};
+    for(const auto& [on,text]:{std::pair{m.caps.hevcHdr,"HEVC Main10 HDR"},std::pair{m.caps.hevcSdr,"HEVC Main10"},std::pair{m.caps.h264Hardware,"H.264"}})
+        if(on)std::snprintf(codecs+std::strlen(codecs),sizeof(codecs)-std::strlen(codecs),"%s%s",*codecs?" \xC2\xB7 ":"",text);
+    info("Hardware video","Modes that passed the startup test streams",*codecs?codecs:"Software decoding only");
+    info("Audio channels","Surround is turned off for now","Stereo");
+    const auto& a=m.audio;
+    const float h=150;
+    rowFrame(c,rowsX,y,rowsW,h,false);
+    const float ix=rowsX+22;
+    label(c,Face::black,21,ix,y+30,"Last session audio",face);
+    if(!a.requested) {
+        drawWrapped(c,Face::semibold,16,ix,y+52,24,"No stream yet since OpenNOW started. After you play, this shows the layout requested and the layout negotiated for that session.",900,2,muted);
+        return;
+    }
+    const auto layout=[](unsigned channels){return channels==8?"7.1":channels==6?"5.1":"Stereo";};
+    char line[96],why[128];
+    std::snprintf(line,sizeof(line),"%s \xC2\xB7 %u channels",layout(a.requested),a.requested);
+    eyebrow(c,ix,y+66,"Requested",muted,13);
+    const float rw=label(c,Face::black,19,ix,y+94,line,face);
+    const float nx=ix+std::max(rw+60,300.0f);
+    eyebrow(c,nx,y+66,"Negotiated",muted,13);
+    if(a.negotiated)std::snprintf(line,sizeof(line),"%s \xC2\xB7 Opus %u channels",layout(a.negotiated),a.negotiated);
+    else std::snprintf(line,sizeof(line),"Not negotiated");
+    label(c,Face::black,19,nx,y+94,line,a.negotiated&&a.negotiated>=a.requested?face:yellow);
+    if(a.fallback)std::snprintf(why,sizeof(why),"The cloud described surround but sent stereo, so OpenNOW fell back to stereo.");
+    else if(!a.negotiated)std::snprintf(why,sizeof(why),"Audio wasn\xE2\x80\x99t set up in that session.");
+    else if(a.negotiated<a.requested)std::snprintf(why,sizeof(why),"This session negotiated %s instead of the requested layout.",layout(a.negotiated));
+    else std::snprintf(why,sizeof(why),"This session negotiated the requested layout.");
+    label(c,Face::semibold,16,ix,y+124,why,muted);
+}
+void cachePane(Canvas& c, const Model& m) {
+    const auto& d=m.disk;
+    const double megabytes=double(d.bytes)/(1024.0*1024.0);
+    const bool known=d.available;
+    char big[32],line[160];
+    float y=rowsTop;
+    const float usageH=120;
+    rowFrame(c,rowsX,y,rowsW,usageH,false);
+    const char* state=d.error?"Cover art storage reported an error on this PS5":d.busy?"Updating\xE2\x80\xA6":!d.enabled?"Saving is off":"oldest removed first when full";
+    if(known)std::snprintf(line,sizeof(line),"%zu of %u images \xC2\xB7 %s",d.count,art::DiskCache::slots,state);
+    else std::snprintf(line,sizeof(line),"%s \xC2\xB7 saved covers aren\xE2\x80\x99t counted until saving is on",state);
+    rowText(c,rowsX,y,usageH,"Cover art on this PS5",line,d.error?coral:muted,false,face,640);
+    if(known)std::snprintf(big,sizeof(big),megabytes<10?"%.1f MB":"%.0f MB",megabytes);
+    else std::snprintf(big,sizeof(big),"Unknown");
+    std::snprintf(line,sizeof(line),"of %zu MB",art::DiskCache::budgetBytes>>20);
+    const float rx=rowsX+rowsW-22;
+    const float lw=labelRight(c,Face::bold,16,rx,y+44,line,muted);
+    labelRight(c,Face::black,28,rx-lw-10,y+44,big,known?face:muted);
+    const float fill=std::min(1.0f,float(double(d.bytes)/double(art::DiskCache::budgetBytes)));
+    c.roundRect(rx-320,y+76,320,10,5,face,41);
+    if(known&&fill>0)c.roundRect(rx-320,y+76,std::max(10.0f,320*fill),10,5,accent);
+    y+=usageH+4;
+    const bool toggleFocus=m.settingsContent&&m.settingsRow==0, clearFocus=m.settingsContent&&m.settingsRow==1;
+    rowFrame(c,rowsX,y,rowsW,84,toggleFocus);
+    rowText(c,rowsX,y,84,"Save cover art on this PS5","Off keeps covers in memory only. They download again each launch.");
+    toggle(c,rx,y+42,m.artworkWanted);
+    y+=88;
+    rowFrame(c,rowsX,y,rowsW,84,clearFocus);
+    const bool canClear=m.art&&!d.busy&&(!known||d.count>0);
+    rowText(c,rowsX,y,84,"Clear cover art cache",canClear?(known?"Removes saved images only. You stay signed in and keep your settings.":"Removes any saved images, even while saving is off. You stay signed in."):
+        d.busy?"Busy right now. Try again in a moment.":"Nothing saved to clear.");
+    valuePill(c,rx,y+42,"Clear cache",true,canClear);
+    y+=88+20;
+    if(m.settings.cacheSaveError){std::snprintf(line,sizeof(line),"Couldn\xE2\x80\x99t save this choice on this PS5 \xC2\xB7 error %d",m.settings.cacheSaveError);dot(c,rowsX+30,y+12,coral);label(c,Face::bold,16,rowsX+46,y+12,line,coral);}
+    else {dot(c,rowsX+30,y+12,mint);label(c,Face::bold,16,rowsX+46,y+12,"Saved on this PS5 \xC2\xB7 changes apply right away",muted);}
+}
+void accountPane(Canvas& c, const Model& m) {
+    float y=rowsTop;
+    const float cardH=120;
+    rowFrame(c,rowsX,y,rowsW,cardH,false);
+    const float ax=rowsX+22+38, cy=y+cardH/2;
+    c.disc(ax,cy,38,violet);c.ring(ax,cy,37,3,face);
+    labelCenter(c,Face::black,32,ax,cy,"N",faceText);
+    const float tx=rowsX+22+76+20;
+    const float nw=label(c,Face::black,28,tx,cy-24,"NVIDIA account",face);
+    const char* tier=m.login.sessionSaved?"LOGIN SAVED":"NOT SAVED";
+    const float bw=textWidth(Face::mono,13,tier,0.08f)+20;
+    c.roundRect(tx+nw+12,cy-36,bw,24,10,m.login.sessionSaved?violet:yellow,41);
+    label(c,Face::mono,13,tx+nw+22,cy-24,tier,m.login.sessionSaved?violet:yellow,0.08f);
+    label(c,Face::bold,17,tx,cy+6,"Signed in to GeForce NOW on this PS5",muted);
+    label(c,Face::semibold,14,tx,cy+30,m.login.sessionSaved?"Login saved on this PS5 and restored when OpenNOW starts.":"Signed in for now \xC2\xB7 the login couldn\xE2\x80\x99t be saved on this PS5.",m.login.sessionSaved?muted:yellow);
+    y+=cardH+4;
+    const bool focused=m.settingsContent;
+    rowFrame(c,rowsX,y,rowsW,84,focused);
+    rowText(c,rowsX,y,84,"Sign out","Removes the saved login. Signing in again needs a new code.");
+    valuePill(c,rowsX+rowsW-22,y+42,"Sign out of NVIDIA",true);
+    y+=88;
+    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowText(c,rowsX,y,84,"Your password stays with NVIDIA","OpenNOW never asks for it. Sign-in happens on NVIDIA\xE2\x80\x99s site with a one-time code from this PS5.",muted,false,face,1200);
+}
+void aboutPane(Canvas& c) {
+    float y=rowsTop;
+    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowText(c,rowsX,y,84,"Version","OpenNOW for PS5 \xC2\xB7 alpha build");
+    infoValue(c,rowsX+rowsW-22,y+42,OPENNOW_VERSION,face);
+    y+=88;
+    const float h=136;
+    rowFrame(c,rowsX,y,rowsW,h,false);
+    label(c,Face::black,21,rowsX+22,y+32,"Credits & licenses",face);
+    drawWrapped(c,Face::semibold,16,rowsX+22,y+52,24,"Built on OpenNOW and OpenNOW-Switch by Open Cloud Gaming. Fonts: Nunito and IBM Plex Mono (SIL OFL 1.1). stb_truetype and stb_image (public domain / MIT). Full notices ship with the app in THIRD_PARTY_NOTICES.",rowsW-44,3,muted);
+    y+=h+4;
+    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowText(c,rowsX,y,84,"Unofficial client","Not affiliated with NVIDIA or Sony. GeForce NOW is a trademark of NVIDIA.");
+}
+
+void paneIcon(Canvas& c, SettingsPane pane, float x, float cy) {
+    constexpr float s=32;
+    const float cx=x+s/2;
+    const Color tone=pane==SettingsPane::stream?accent:pane==SettingsPane::display?yellow:pane==SettingsPane::controller?mint:
+                     pane==SettingsPane::cache?coral:pane==SettingsPane::account?violet:face;
+    c.roundRect(x,cy-s/2,s,s,9,tone);
+    switch(pane) {
+    case SettingsPane::stream: {const float p[]={cx-4,cy-7,cx+7,cy,cx-4,cy+7};c.polygon(p,3,faceText);break;}
+    case SettingsPane::display: c.roundRect(cx-9,cy-8,18,12,3,faceText);c.roundRect(cx-5,cy+6,10,2.5f,1,faceText);break;
+    case SettingsPane::controller:
+        c.roundRect(cx-11,cy-6,22,12,6,faceText);
+        c.roundRect(cx-7.5f,cy-1,6,2,1,tone);c.roundRect(cx-5.5f,cy-3,2,6,1,tone);
+        c.disc(cx+5,cy-1.5f,1.6f,tone);c.disc(cx+7.5f,cy+1.5f,1.6f,tone);
+        break;
+    case SettingsPane::cache: {
+        c.roundRectStroke(cx-9,cy-8,18,16,3,2,faceText);
+        const float p[]={cx-6,cy+5,cx-1,cy-1,cx+3,cy+5};c.polygon(p,3,faceText);
+        c.disc(cx+4,cy-3,2,faceText);
+        break;
+    }
+    case SettingsPane::account: c.disc(cx,cy-3.5f,4,faceText);c.roundRect(cx-7,cy+2,14,7,3.5f,faceText);break;
+    case SettingsPane::about: labelCenter(c,Face::black,18,cx,cy,"i",faceText);break;
+    }
+}
+const char* paneName(SettingsPane pane) {
+    constexpr const char* names[]={"Streaming","Display & audio","Input & controllers","Cover art & cache","Account","About"};
+    return names[static_cast<unsigned>(pane)];
+}
+bool settingsDialog(const Model& m) {return m.edit.open()||m.confirmClear||m.confirmFixed||m.confirmSignOut;}
+void settingsSidebar(Canvas& c, const Model& m) {
+    panel(c,96,124,360,792,40);
+    for(unsigned i=0;i<settingsPanes;++i) {
+        const auto pane=static_cast<SettingsPane>(i);
+        const float cy=168+i*58.0f;
+        const bool active=pane==m.pane;
+        if(active) {
+            c.roundRect(119,cy-27,314,54,27,face);
+            if(!m.settingsContent&&!settingsDialog(m))focusFrame(c,119,cy-27,314,54,27);
+        }
+        paneIcon(c,pane,135,cy);
+        fitted(c,Face::black,19,181,cy,paneName(pane),236,active?faceText:face);
+    }
+}
+
+void slider(Canvas& c, float rightX, float cy, int value, const ControllerRange& range, bool focused) {
+    char text[16];std::snprintf(text,sizeof(text),"%d%%",value);
+    const float tw=280, tx=rightX-120-tw;
+    const float t=std::clamp(static_cast<float>(value-range.min)/static_cast<float>(range.max-range.min),0.0f,1.0f), kx=tx+tw*t;
+    c.roundRect(tx,cy-4,tw,8,4,face,41);
+    if(kx>tx)c.roundRect(tx,cy-4,std::max(8.0f,kx-tx),8,4,accent);
+    if(focused)c.disc(kx,cy,20,accent,90);
+    c.disc(kx,cy,14,face);
+    label(c,Face::black,20,rightX-88,cy,text,face);
+}
+void controllerPane(Canvas& c, const Model& m) {
+    const auto& s=m.controller;
+    struct Row { const char* title; const char* description; int value; };
+    const Row rows[]={
+        {"Left stick dead zone","Ignore small movements from stick drift. Default: 5%.",s.leftDeadzone},
+        {"Right stick dead zone","Ignore small movements from stick drift. Default: 5%.",s.rightDeadzone},
+        {"Vibration intensity","How strongly game rumble plays on the controller. 0% turns it off. Default: 100%.",s.vibration},
+        {"Mouse sensitivity","Pointer speed when the controller moves the mouse. Default: 100%.",s.mouseSensitivity}};
+    float y=rowsTop;
+    const float h=84, rx=rowsX+rowsW-22;
+    for(unsigned i=0;i<4;++i,y+=h+4) {
+        const bool focused=m.settingsContent&&m.settingsRow==i;
+        rowFrame(c,rowsX,y,rowsW,h,focused);
+        rowText(c,rowsX,y,h,rows[i].title,rows[i].description,muted,false,face,760);
+        slider(c,rx,y+h/2,rows[i].value,controllerRanges[i],focused);
+    }
+    if(!s.persistSupported)return;
+    const unsigned row=static_cast<unsigned>(ControllerRow::persistGameSettings);
+    rowFrame(c,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==row);
+    rowText(c,rowsX,y,h,"Persistent in-game settings","Keep your in-game graphics settings between sessions for supported games. Applies to new sessions.",muted,false,face,1000);
+    toggle(c,rx,y+h/2,s.persistGameSettings);
+}
+
+void sheetBackdrop(Canvas& c) {c.roundRect(0,0,1920,1080,0,black,166);}
+void sheet(Canvas& c, float x, float y, float w, float h, float radius) {
+    c.roundRect(x,y,w,h,radius,sheetFill);
+    c.roundRectStroke(x,y,w,h,radius,1,face,seamAlpha);
+}
+float confirmSheet(Canvas& c, Color tone, const char* tag, const char* title, const char* body) {
+    sheetBackdrop(c);
+    sheet(c,48,48,620,984,40);
+    c.disc(113,113,32,tone);
+    c.roundRect(110,96,6,22,3,faceText);c.disc(113,128,3.5f,faceText);
+    eyebrow(c,81,178,tag,tone,15,553);
+    const unsigned lines=drawWrapped(c,Face::black,40,81,196,48,title,553,3,face);
+    const float y=196+lines*48.0f+20;
+    return y+drawWrapped(c,Face::semibold,20,81,y,30,body,553,5,muted)*30.0f;
+}
+void sheetActions(Canvas& c, const Button& confirm, const Button& cancel) {
+    actionButton(c,confirm,81,784,80,553,22,34);
+    focusFrame(c,81,784,553,80,26);
+    actionButton(c,cancel,81,876,72,553,20,30);
+    const Hint h[]={{Glyph::cross,confirm.text},{Glyph::circle,cancel.text}};
+    hintRow(c,h,2,81,984);
+}
+void signOutConfirm(Canvas& c) {
+    confirmSheet(c,coral,"Sign out","Sign out of NVIDIA on this PS5?",
+        "The saved login is deleted from this PS5. Signing out doesn\xE2\x80\x99t remove games from your GeForce NOW library or change purchases on Steam, Epic or other stores.");
+    sheetActions(c,{Glyph::cross,"Sign out",true},{Glyph::circle,"Cancel"});
+}
+void clearConfirm(Canvas& c, const Model& m) {
+    char head[64],removed[48];
+    const bool known=m.disk.available;
+    const double megabytes=double(m.disk.bytes)/(1024.0*1024.0);
+    if(known)std::snprintf(head,sizeof(head),megabytes<10?"Clear %.1f MB of cover art?":"Clear %.0f MB of cover art?",megabytes);
+    else std::snprintf(head,sizeof(head),"Clear saved cover art?");
+    float y=confirmSheet(c,coral,"Cover art cache",head,"Covers download again the next time you open Library or Store.")+36;
+    rule(c,81,y,553);y+=34;
+    eyebrow(c,81,y,"Removed",coral,13);
+    eyebrow(c,360,y,"Kept",mint,13);
+    y+=34;
+    if(known)std::snprintf(removed,sizeof(removed),"%zu saved cover image%s",m.disk.count,m.disk.count==1?"":"s");
+    else std::snprintf(removed,sizeof(removed),"All saved cover images");
+    drawWrapped(c,Face::bold,18,81,y-13,26,removed,250,2,face);
+    for(const char* kept:{"NVIDIA sign-in","Stream settings","Your Library list"}){label(c,Face::bold,18,360,y,kept,face);y+=32;}
+    sheetActions(c,{Glyph::cross,"Clear cache",true},{Glyph::circle,"Keep"});
+}
+void fixedConfirm(Canvas& c, const Model& m) {
+    float y=confirmSheet(c,yellow,"Hardware H.264","Use fixed-resolution streaming with hardware decoding?",
+        "Hardware H.264 can\xE2\x80\x99t follow resolution changes during a stream yet, so the cloud must keep one fixed resolution. This only changes the draft; it still needs Save.")+36;
+    rule(c,81,y,553);y+=36;
+    const auto change=[&](const char* key,const char* from,const char* to) {
+        label(c,Face::bold,17,81,y,key,muted);
+        y+=30;
+        const float fw=label(c,Face::mono,17,81,y,from,muted);
+        const float ax=81+fw+14;
+        c.line(ax,y,ax+18,y,2.4f,muted);c.line(ax+12,y-6,ax+18,y,2.4f,muted);c.line(ax+12,y+6,ax+18,y,2.4f,muted);
+        label(c,Face::mono,17,ax+32,y,to,face);
+        y+=42;
+    };
+    change("Decoding",m.draft.hardware()?(m.draft.tenBit()?"Hardware HEVC":"Hardware H.264"):"Software","Hardware H.264");
+    change("Resolution policy","Adaptive","Fixed");
+    sheetActions(c,{Glyph::cross,"Use fixed resolution",true},{Glyph::circle,"Keep current draft"});
 }
 void numberEditor(Canvas& c, const Model& m) {
     const auto& e=m.edit;
     const StreamSettings candidate=applyEdit(e,m.draft);
     const auto error=validateSettings(candidate);
-    c.roundRect(0,0,1920,1080,0,rgb(0x06090C),214);
-    const float x=592, y=232, w=1232, h=560;
-    c.roundRect(x,y,w,h,28,surface);
-    c.roundRectStroke(x,y,w,h,28,2,hairline);
+    sheetBackdrop(c);
+    const float x=440, y=168, w=1040, h=716;
+    sheet(c,x,y,w,h,40);
     const bool resolution=e.row==StreamRow::resolution;
-    const char* title=resolution?"Custom resolution":e.row==StreamRow::fps?"Frame rate":"Bitrate limit";
-    label(c,Face::black,40,x+48,y+66,title,ink);
+    eyebrow(c,x+48,y+52,"Streaming \xC2\xB7 exact value",accent,14);
+    label(c,Face::black,36,x+48,y+96,resolution?"Custom resolution":e.row==StreamRow::fps?"Frame rate":"Bitrate limit",face,-0.01f);
     char was[48];
     if(resolution)std::snprintf(was,sizeof(was),"was %d \xC3\x97 %d",m.draft.width,m.draft.height);
     else if(e.row==StreamRow::fps)std::snprintf(was,sizeof(was),"was %d FPS",m.draft.fps);
     else std::snprintf(was,sizeof(was),"was %d Mb/s",m.draft.bitrate_kbps/1000);
-    labelRight(c,Face::mono,20,x+w-48,y+66,was,dim);
+    labelRight(c,Face::mono,16,x+w-48,y+96,was,muted);
     const auto bad=[&](unsigned from) {
         if(!resolution)return error!=SettingsError::none;
         const int v=editNumber(e,from,4);
         return from==0?(v<320||v>maxWidth(candidate)||(v&1)):(v<180||v>maxHeight(candidate)||(v&1));
     };
+    const float cellsY=y+200;
     const auto group=[&](float gx,const char* name,unsigned from,unsigned count) {
         const bool wrong=bad(from);
-        label(c,Face::extrabold,18,gx,y+150,name,wrong?coral:dim,0.14f);
-        const float gw=count*92.0f+4;
-        if(wrong)c.roundRectStroke(gx-6,y+172,gw+8,128,22,2,coral);
+        eyebrow(c,gx,y+160,name,wrong?coral:muted,13);
+        const float gw=count*92.0f-8;
+        if(wrong)c.roundRectStroke(gx-8,cellsY-8,gw+16,132,26,1.5f,coral,153);
         for(unsigned i=0;i<count;++i) {
             const unsigned index=from+i;
             const float cx=gx+i*92.0f;
             const bool active=index==e.cursor;
-            c.roundRect(cx,y+178,84,116,16,raised);
             if(active) {
-                c.roundRectStroke(cx-2,y+176,88,120,18,4,mint);
-                c.line(cx+32,y+164,cx+42,y+154,3.2f,mint);c.line(cx+42,y+154,cx+52,y+164,3.2f,mint);
-                c.line(cx+32,y+308,cx+42,y+318,3.2f,mint);c.line(cx+42,y+318,cx+52,y+308,3.2f,mint);
+                c.roundRect(cx,cellsY,84,116,20,face,26);
+                focusFrame(c,cx,cellsY,84,116,20);
+                c.line(cx+32,cellsY-14,cx+42,cellsY-24,3,accent);c.line(cx+42,cellsY-24,cx+52,cellsY-14,3,accent);
+                c.line(cx+32,cellsY+130,cx+42,cellsY+140,3,accent);c.line(cx+42,cellsY+140,cx+52,cellsY+130,3,accent);
+            } else {
+                c.roundRect(cx,cellsY,84,116,20,face,18);
+                c.roundRectStroke(cx,cellsY,84,116,20,1,face,seamAlpha);
             }
             const char digit[2]{e.digits[index],0};
-            const float dw=textWidth(Face::black,72,digit);
-            drawText(c,Face::black,72,cx+42-dw/2,baselineIn(Face::black,72,y+178,116),digit,ink);
+            labelCenter(c,Face::black,64,cx+42,cellsY+58,digit,face);
         }
         return gw;
     };
     float gx=x+48;
     if(resolution) {
-        gx+=group(gx,"WIDTH",0,4)+28;
-        label(c,Face::black,56,gx,y+236,"\xC3\x97",dim);
-        group(gx+60,"HEIGHT",4,4);
-    } else group(gx,e.row==StreamRow::fps?"FRAMES PER SECOND":"MEGABITS PER SECOND",0,3);
+        gx+=group(gx,"Width",0,4)+28;
+        label(c,Face::black,48,gx,cellsY+58,"\xC3\x97",muted);
+        group(gx+56,"Height",4,4);
+    } else group(gx,e.row==StreamRow::fps?"Frames per second":"Megabits per second",0,3);
     const char* problem=settingsProblem(candidate,true);
-    if(problem){warningIcon(c,x+64,y+374,coral);label(c,Face::extrabold,26,x+92,y+374,problem,coral);}
-    else if(!m.editAvailable){warningIcon(c,x+64,y+374,amber);label(c,Face::extrabold,26,x+92,y+374,"Not qualified for this PS5 and output \xC2\xB7 Save stays off",amber);}
-    else {c.disc(x+64,y+374,8,mint);label(c,Face::extrabold,26,x+92,y+374,"Valid",mint);}
+    const float sy=y+392;
+    if(problem){dot(c,x+56,sy,coral);label(c,Face::black,20,x+72,sy,problem,coral);}
+    else if(!m.editAvailable){dot(c,x+56,sy,yellow);label(c,Face::black,20,x+72,sy,"Not qualified for this PS5 and output \xC2\xB7 Save stays off",yellow);}
+    else {dot(c,x+56,sy,mint);label(c,Face::black,20,x+72,sy,"Valid",mint);}
     const char* range=resolution?(candidate.hardware()?"Width 320 to 3840, height 180 to 2160, both even.":"Software decoding: width 320 to 1920, height 180 to 1080, both even."):
         e.row==StreamRow::fps?(candidate.hardware()?"Any whole number from 30 to 120.":"Software decoding: 30 to 60."):"Any whole number from 4 to 100.";
-    label(c,Face::semibold,20,x+92,y+410,range,dim);
-    label(c,Face::extrabold,18,x+48,y+464,resolution?"COMMON SIZES \xC2\xB7 L1 / R1":"COMMON VALUES \xC2\xB7 L1 / R1",dim,0.14f);
+    label(c,Face::semibold,17,x+72,sy+32,range,muted);
+    rule(c,x+48,y+472,w-96);
+    eyebrow(c,x+48,y+510,resolution?"Common sizes":"Common values",muted,13);
     float cx=x+48;
     char chip[32];
-    const auto drawChip=[&](const char* t){const float cw=textWidth(Face::mono,20,t)+36;c.roundRectStroke(cx,y+486,cw,44,22,2,hairline);label(c,Face::mono,20,cx+18,y+508,t,muted);cx+=cw+10;};
+    const auto drawChip=[&](const char* t) {
+        const float cw=textWidth(Face::mono,16,t)+36;
+        if(cx+cw>x+w-48)return;
+        c.roundRect(cx,y+536,cw,44,22,face,18);
+        c.roundRectStroke(cx,y+536,cw,44,22,1,face,seamAlpha);
+        label(c,Face::mono,16,cx+18,y+558,t,face);
+        cx+=cw+10;
+    };
     if(resolution){for(const auto& size:commonSizes)if(size.width<=maxWidth(candidate)&&size.height<=maxHeight(candidate)){std::snprintf(chip,sizeof(chip),"%d \xC3\x97 %d",size.width,size.height);drawChip(chip);}}
     else if(e.row==StreamRow::fps){for(int v:commonFps)if(v<=maxFps(candidate)){std::snprintf(chip,sizeof(chip),"%d",v);drawChip(chip);}}
     else for(int v:commonBitrates){std::snprintf(chip,sizeof(chip),"%d Mb/s",v);drawChip(chip);}
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Pick digit / change"},{HintKind::chord,Glyph::cross,nullptr,resolution?"Common sizes":"Common values"}};
-    const Hint r[]={{HintKind::glyph,Glyph::cross,nullptr,problem?"Done (fix first)":"Done"},{HintKind::glyph,Glyph::circle,nullptr,"Cancel"}};
-    hints(c,l,2,r,2);
+    const Hint l[]={{Glyph::dpad,"Pick digit / change"},{Glyph::l1,resolution?"Common sizes":"Common values",Glyph::r1,nullptr,face,"/"}};
+    const Hint r[]={{Glyph::circle,"Cancel"},{Glyph::cross,problem?"Done (fix first)":"Done",Glyph::none,nullptr,problem?muted:face}};
+    hintRow(c,l,2,x+48,y+h-50);
+    hintRow(c,r,2,x+w-48-hintRowWidth(r,2),y+h-50);
 }
-void cachePane(Canvas& c, const Model& m, float x, float w) {
-    const auto& d=m.disk;
-    const double megabytes=double(d.bytes)/(1024.0*1024.0);
-    const bool known=d.available;
-    char big[32],line[128];
-    if(known)std::snprintf(big,sizeof(big),megabytes<10?"%.1f MB":"%.0f MB",megabytes);
-    else std::snprintf(big,sizeof(big),"Unknown");
-    const float bw=drawText(c,Face::black,112,x,baselineIn(Face::black,112,372,112),big,known?ink:muted,-0.03f);
-    std::snprintf(line,sizeof(line),known?"of %zu MB limit":"usage \xC2\xB7 %zu MB limit",art::DiskCache::budgetBytes>>20);
-    label(c,Face::bold,30,x+bw+18,452,line,dim);
-    c.roundRect(x,500,w,12,6,raised);
-    const float fill=std::min(1.0f,float(double(d.bytes)/double(art::DiskCache::budgetBytes)));
-    if(known&&fill>0)c.roundRect(x,500,std::max(12.0f,w*fill),12,6,mint);
-    const char* state=d.error?"Cover art storage reported an error on this PS5":d.busy?"Updating\xE2\x80\xA6":!d.enabled?"Saving is off":"oldest removed first when full";
-    if(known)std::snprintf(line,sizeof(line),"%zu of %u images \xC2\xB7 %s",d.count,art::DiskCache::slots,state);
-    else std::snprintf(line,sizeof(line),"%s \xC2\xB7 saved covers aren\xE2\x80\x99t counted until saving is on",state);
-    label(c,Face::mono,20,x,544,line,d.error?coral:muted);
-    const bool toggleFocus=m.settingsContent&&m.settingsRow==0, clearFocus=m.settingsContent&&m.settingsRow==1;
-    settingsRow(c,x,598,w,92,toggleFocus);
-    label(c,Face::extrabold,26,x+28,630,"Save cover art on this PS5",ink);
-    label(c,Face::semibold,20,x+28,662,"Off keeps covers in memory only. They download again each launch.",dim);
-    const Option o[]={{"Off",!m.artworkWanted,false},{"On",m.artworkWanted,false}};
-    segmented(c,x+w-16,644,o,2);
-    settingsRow(c,x,706,w,92,clearFocus);
-    const bool canClear=m.art&&!d.busy&&(!known||d.count>0);
-    label(c,Face::extrabold,26,x+28,738,"Clear cover art cache",ink);
-    label(c,Face::semibold,20,x+28,770,canClear?(known?"Removes saved images only. You stay signed in and keep your settings.":"Removes any saved images, even while saving is off. You stay signed in."):
-        d.busy?"Busy right now. Try again in a moment.":"Nothing saved to clear.",dim);
-    const float cw=8+36+10+textWidth(Face::black,22,"Clear")+22, cx=x+w-16-cw;
-    c.roundRect(cx,726,cw,52,26,canClear&&clearFocus?mint:raised);
-    c.disc(cx+8+18,752,18,canClear&&clearFocus?rgb(0x0E4A2C):hairline);glyph(c,Glyph::cross,cx+8+18,752,canClear?ink:dim,20);
-    label(c,Face::black,22,cx+8+36+10,752,"Clear",canClear&&clearFocus?mintInk:canClear?ink:dim);
-    if(m.settings.cacheSaveError){std::snprintf(line,sizeof(line),"Couldn\xE2\x80\x99t save this choice on this PS5 \xC2\xB7 error %d",m.settings.cacheSaveError);c.disc(x+34,836,5,coral);label(c,Face::bold,20,x+48,836,line,coral);}
-    else {c.disc(x+34,836,5,mint);label(c,Face::bold,20,x+48,836,"Saved on this PS5 \xC2\xB7 changes apply right away",muted);}
-}
-void clearConfirm(Canvas& c, const Model& m) {
-    c.roundRect(0,0,1920,1080,0,rgb(0x06090C),214);
-    const float x=460, y=250, w=1000, h=530;
-    c.roundRect(x,y,w,h,28,surface);
-    c.roundRectStroke(x,y,w,h,28,2,hairline);
-    char head[64];
-    const bool known=m.disk.available;
-    const double megabytes=double(m.disk.bytes)/(1024.0*1024.0);
-    if(known)std::snprintf(head,sizeof(head),megabytes<10?"Clear %.1f MB of cover art?":"Clear %.0f MB of cover art?",megabytes);
-    else std::snprintf(head,sizeof(head),"Clear saved cover art?");
-    drawFitted(c,Face::black,56,x+52,baselineIn(Face::black,56,y+44,62),head,w-104,ink,-0.02f);
-    label(c,Face::semibold,26,x+52,y+150,"Covers download again the next time you open Library or Browse.",muted);
-    c.roundRect(x+52,y+194,w-104,2,1,hairline);
-    label(c,Face::extrabold,18,x+52,y+232,"REMOVED",coral,0.14f);
-    char removed[48];
-    if(known)std::snprintf(removed,sizeof(removed),"%zu saved cover image%s",m.disk.count,m.disk.count==1?"":"s");
-    else std::snprintf(removed,sizeof(removed),"All saved cover images");
-    label(c,Face::bold,24,x+52,y+272,removed,ink);
-    label(c,Face::extrabold,18,x+520,y+232,"KEPT",mint,0.14f);
-    label(c,Face::bold,24,x+520,y+272,"NVIDIA sign-in",ink);
-    label(c,Face::bold,24,x+520,y+314,"Stream settings",ink);
-    label(c,Face::bold,24,x+520,y+356,"Your Library list",ink);
-    c.roundRect(x+52,y+394,w-104,2,1,hairline);
-    const float bw=button(c,x+52,y+422,Glyph::cross,"Clear cache",true);
-    c.roundRectStroke(x+48,y+418,bw+8,88,44,4,mint);
-    button(c,x+52+bw+20,y+422,Glyph::circle,"Keep",false);
-    const Hint r[]={{HintKind::glyph,Glyph::cross,nullptr,"Clear cache"},{HintKind::glyph,Glyph::circle,nullptr,"Keep"}};
-    hints(c,nullptr,0,r,2);
-}
-void fixedConfirm(Canvas& c, const Model& m) {
-    c.roundRect(0,0,1920,1080,0,rgb(0x06090C),214);
-    const float x=440, y=220, w=1040, h=570;
-    c.roundRect(x,y,w,h,28,surface);
-    c.roundRectStroke(x,y,w,h,28,2,hairline);
-    label(c,Face::extrabold,18,x+52,y+56,"HARDWARE H.264",amber,0.14f);
-    drawWrapped(c,Face::black,50,x+52,y+84,56,"Use fixed-resolution streaming with hardware decoding?",w-104,2,ink);
-    drawWrapped(c,Face::semibold,24,x+52,y+212,34,"Hardware H.264 can\xE2\x80\x99t follow resolution changes during a stream yet, so the cloud must keep one fixed resolution. This only changes the draft; it still needs Save.",w-104,2,muted);
-    c.roundRect(x+52,y+296,w-104,2,1,hairline);
-    const auto change=[&](float ry,const char* key,const char* from,const char* to) {
-        label(c,Face::bold,22,x+52,ry,key,muted);
-        const float fw=label(c,Face::mono,22,x+288,ry,from,dim);
-        const float ax=x+288+fw+16;
-        c.line(ax,ry,ax+20,ry,2.6f,dim);c.line(ax+13,ry-7,ax+20,ry,2.6f,dim);c.line(ax+13,ry+7,ax+20,ry,2.6f,dim);
-        label(c,Face::mono,22,ax+36,ry,to,ink);
-    };
-    change(y+336,"Decoding",m.draft.hardware()?(m.draft.tenBit()?"Hardware HEVC":"Hardware H.264"):"Software","Hardware H.264");
-    change(y+378,"Resolution policy","Adaptive","Fixed");
-    c.roundRect(x+52,y+412,w-104,2,1,hairline);
-    const float bw=button(c,x+52,y+446,Glyph::cross,"Use fixed resolution",true);
-    c.roundRectStroke(x+48,y+442,bw+8,88,44,4,mint);
-    button(c,x+52+bw+20,y+446,Glyph::circle,"Keep current draft",false);
-    const Hint r[]={{HintKind::glyph,Glyph::cross,nullptr,"Use fixed resolution"},{HintKind::glyph,Glyph::circle,nullptr,"Keep current draft"}};
-    hints(c,nullptr,0,r,2);
-}
-const char* layoutName(unsigned channels) {return channels==8?"7.1":channels==6?"5.1":"Stereo";}
-void displayPane(Canvas& c, const Model& m, float x, float w) {
-    string_view output(m.output?m.output:"");
-    if(output.rfind("OUTPUT ",0)==0)output.remove_prefix(7);
-    infoRow(c,x,368,w,"Video output",output,"VideoOut mode chosen at startup",94);
-    char codecs[96]{};
-    for(const auto& [on,text]:{std::pair{m.caps.hevcHdr,"HEVC Main10 HDR"},std::pair{m.caps.hevcSdr,"HEVC Main10"},std::pair{m.caps.h264Hardware,"H.264"}})
-        if(on)std::snprintf(codecs+std::strlen(codecs),sizeof(codecs)-std::strlen(codecs),"%s%s",*codecs?" \xC2\xB7 ":"",text);
-    infoRow(c,x,474,w,"Hardware video",*codecs?codecs:"Software decoding only","Modes that passed the startup test streams",94);
-    infoRow(c,x,580,w,"Audio channels","Stereo","Surround is turned off for now",94);
-    char line[256];
-    const float cy=684;
-    c.roundRectStroke(x,cy,w,198,22,2,hairline);
-    label(c,Face::extrabold,18,x+32,cy+30,"LAST SESSION AUDIO",dim,0.14f);
-    const auto& a=m.audio;
-    if(!a.requested) {
-        drawWrapped(c,Face::semibold,22,x+32,cy+60,32,"No stream yet since OpenNOW started. After you play, this shows the layout requested and the layout negotiated for that session.",w-64,2,muted);
-    } else {
-        label(c,Face::semibold,18,x+32,cy+66,"Requested",dim);
-        std::snprintf(line,sizeof(line),"%s \xC2\xB7 %u channels",layoutName(a.requested),a.requested);
-        const float rw=label(c,Face::mono,24,x+32,cy+96,line,ink);
-        const float nx=x+32+std::max(rw+48,280.0f);
-        label(c,Face::semibold,18,nx,cy+66,"Negotiated",dim);
-        if(a.negotiated)std::snprintf(line,sizeof(line),"%s \xC2\xB7 Opus %u channels",layoutName(a.negotiated),a.negotiated);
-        else std::snprintf(line,sizeof(line),"Not negotiated");
-        label(c,Face::mono,24,nx,cy+96,line,a.negotiated&&a.negotiated>=a.requested?ink:amber);
-        char why[96];
-        if(a.fallback)std::snprintf(why,sizeof(why),"The cloud described surround but sent stereo, so OpenNOW fell back to stereo.");
-        else if(!a.negotiated)std::snprintf(why,sizeof(why),"Audio wasn\xE2\x80\x99t set up in that session.");
-        else if(a.negotiated<a.requested)std::snprintf(why,sizeof(why),"This session negotiated %s instead of the requested layout.",layoutName(a.negotiated));
-        else std::snprintf(why,sizeof(why),"This session negotiated the requested layout.");
-        drawWrapped(c,Face::semibold,20,x+32,cy+122,28,why,w-64,2,muted);
-    }
-}
+
 void settings(Canvas& c, const Model& m) {
-    const char* panes[]={"Stream","Display & audio","Cover art & cache","Account","About"};
-    for(unsigned i=0;i<settingsPanes;++i) {
-        const float y=216+i*80.0f;
-        const bool active=i==static_cast<unsigned>(m.pane);
-        if(active) {
-            c.roundRect(left,y,400,72,18,surface);
-            c.roundRect(left+24,y+20,6,32,3,mint);
-            if(!m.settingsContent)c.roundRectStroke(left-4,y-4,408,80,22,4,mint);
-        }
-        label(c,active?Face::black:Face::bold,28,left+46,y+36,panes[i],active?ink:muted);
+    screenBase(c,shell);
+    settingsSidebar(c,m);
+    if(m.pane==SettingsPane::stream)draftCard(c,m);
+    panel(c,480,124,1344,792,40);
+    label(c,Face::black,34,537,175,paneName(m.pane),face,-0.01f);
+    switch(m.pane) {
+    case SettingsPane::stream: streamPane(c,m);break;
+    case SettingsPane::display: displayPane(c,m);break;
+    case SettingsPane::controller: controllerPane(c,m);break;
+    case SettingsPane::cache: cachePane(c,m);break;
+    case SettingsPane::account: accountPane(c,m);break;
+    case SettingsPane::about: aboutPane(c);break;
     }
-    const float x=592, w=right-x;
-    const auto title=[&](string_view head,string_view sub){
-        drawText(c,Face::black,72,x,baselineIn(Face::black,72,214,76),head,ink,-0.02f);
-        drawWrapped(c,Face::semibold,26,x,302,36,sub,w,2,muted);
-    };
-    if(m.pane==SettingsPane::stream) {
-        title("Stream","What OpenNOW asks NVIDIA for. The cloud and this PS5 decide what you actually get.");
-        streamPane(c,m,x);
-    } else if(m.pane==SettingsPane::cache) {
-        title("Cover art & cache",m.artworkWanted?"Covers are saved on this PS5, so Library and Browse open fast after a restart.":"Saving is off, so covers download again after each restart.");
-        cachePane(c,m,x,w);
-    } else if(m.pane==SettingsPane::display) {
-        title("Display & audio","Video output is reported by this PS5. Audio streams in stereo.");
-        displayPane(c,m,x,w);
-    } else if(m.pane==SettingsPane::account) {
-        title("Account","Your NVIDIA sign-in for GeForce NOW on this PS5.");
-        c.roundRect(x,380,w,126,22,surface);
-        c.disc(x+32+32,443,32,raised);glyph(c,Glyph::check,x+64,443,mint,30);
-        label(c,Face::extrabold,30,x+120,424,"Signed in to NVIDIA",ink);
-        label(c,Face::semibold,22,x+120,462,m.login.sessionSaved?"Login saved on this PS5 and restored when OpenNOW starts.":"Signed in for now \xC2\xB7 the login couldn\xE2\x80\x99t be saved on this PS5.",m.login.sessionSaved?muted:amber);
-        settingsRow(c,x,520,w,126,m.settingsContent);
-        label(c,Face::extrabold,30,x+32,564,"Sign out",coral);
-        label(c,Face::semibold,22,x+32,602,"Removes the saved login. Signing in again needs a new code.",muted);
-        const float sw=44+12+textWidth(Face::bold,24,"Sign out\xE2\x80\xA6");
-        well(c,Glyph::cross,x+w-32-sw,583);
-        label(c,Face::bold,24,x+w-32-sw+56,583,"Sign out\xE2\x80\xA6",ink);
-        label(c,Face::extrabold,20,x+32,690,"GOOD TO KNOW",dim,0.14f);
-        drawWrapped(c,Face::semibold,22,x+32,712,32,"OpenNOW never asks for your NVIDIA password. Sign-in happens on NVIDIA\xE2\x80\x99s site with a one-time code from this PS5.",w-64,2,muted);
-    } else {
-        title("About","OpenNOW for PS5 is an independent, unofficial GeForce NOW client.");
-        infoRow(c,x,384,w,"Version",OPENNOW_VERSION,"Alpha build");
-        c.roundRect(x,514,w,240,22,surface);
-        label(c,Face::extrabold,28,x+32,558,"Credits & licenses",ink);
-        drawWrapped(c,Face::semibold,22,x+32,584,32,"Built on OpenNOW and OpenNOW-Switch by Open Cloud Gaming. Fonts: Nunito and IBM Plex Mono (SIL OFL 1.1). stb_truetype and stb_image (public domain / MIT). Full notices ship with the app in THIRD_PARTY_NOTICES.",w-64,4,muted);
-        drawWrapped(c,Face::semibold,22,x+32,790,32,"Not affiliated with NVIDIA or Sony. GeForce NOW is a trademark of NVIDIA.",w-64,2,dim);
-    }
-    if(m.edit.open()){numberEditor(c,m);return;}
-    if(m.confirmClear){clearConfirm(c,m);return;}
-    if(m.confirmFixed){fixedConfirm(c,m);return;}
-    if(m.confirmSignOut) {
-        c.roundRect(0,0,1920,1080,0,rgb(0x06090C),200);
-        c.roundRect(480,300,960,548,32,surface);
-        label(c,Face::extrabold,22,536,370,"SIGN OUT",coral,0.14f);
-        drawWrapped(c,Face::black,64,536,400,68,"Sign out of NVIDIA on this PS5?",848,2,ink);
-        drawWrapped(c,Face::semibold,26,536,560,38,"The saved login is deleted from this PS5. Signing out doesn\xE2\x80\x99t remove games from your GeForce NOW library or change purchases on Steam, Epic or other stores.",848,3,muted);
-        const float bw=16+48+16+textWidth(Face::black,28,"Sign out")+36;
-        c.roundRectStroke(527,705,bw+18,98,49,4,mint);
-        c.roundRect(536,714,bw,80,40,coral);
-        c.disc(536+16+24,754,24,rgb(0x3A0E0A));glyph(c,Glyph::cross,536+40,754,ink);
-        label(c,Face::black,28,536+80,754,"Sign out",rgb(0x3A0E0A));
-        button(c,536+bw+20,714,Glyph::circle,"Cancel",false);
-        return;
-    }
-    if(m.settingsContent&&m.pane==SettingsPane::stream) {
+    const bool dialog=settingsDialog(m);
+    const unsigned rows=settingsRows(m.pane,m.controller);
+    Hint left[2]{},right[2]{};
+    unsigned l=0,r=0;
+    if(!m.settingsContent) {
+        left[l++]={Glyph::circle,"Close app"};
+        if(rows)right[r++]={Glyph::cross,"Select"};
+    } else if(m.pane==SettingsPane::stream) {
         const auto row=static_cast<StreamRow>(m.settingsRow);
-        const bool editable=row==StreamRow::resolution||row==StreamRow::fps||row==StreamRow::bitrate;
         const bool canSave=changedRows(m.draft,m.defaults)&&!settingsProblem(m.draft,m.draftAvailable);
-        const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move / change"},{HintKind::glyph,Glyph::cross,nullptr,row==StreamRow::reset?"Reset":"Edit"}};
-        const Hint r[]={{canSave?HintKind::optionsMint:HintKind::glyph,Glyph::options,nullptr,"Save"},{HintKind::glyph,Glyph::square,nullptr,"Revert"},back};
-        hints(c,l,editable||row==StreamRow::reset?2:1,r,3);
-        return;
+        left[l++]={Glyph::circle,"Sections"};
+        left[l++]={Glyph::square,"Revert"};
+        right[r++]={Glyph::options,"Save",Glyph::none,nullptr,canSave?mint:muted};
+        if(row==StreamRow::resolution||row==StreamRow::fps||row==StreamRow::bitrate||row==StreamRow::reset)
+            right[r++]={Glyph::cross,row==StreamRow::reset?"Reset":"Edit"};
+    } else {
+        left[l++]={Glyph::circle,"Sections"};
+        const bool adjust=m.pane==SettingsPane::controller&&m.settingsRow<static_cast<unsigned>(ControllerRow::persistGameSettings);
+        right[r++]=adjust?Hint{Glyph::dpad,"Adjust"}:Hint{Glyph::cross,"Select"};
     }
-    if(m.settingsContent) {
-        const bool change=m.pane==SettingsPane::cache&&m.settingsRow==0;
-        const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,change?"Move / change":"Move"},{HintKind::glyph,Glyph::cross,nullptr,"Select"}};
-        const Hint r[]={back};
-        hints(c,l,2,r,1);
-        return;
-    }
-    const Hint l[]={{HintKind::glyph,Glyph::dpad,nullptr,"Move"},{HintKind::glyph,Glyph::cross,nullptr,"Open"}};
-    sectionHints(c,l,settingsRows(m.pane)?2:1);
+    chrome(c,m,"Settings",true,left,l,right,r,!dialog);
+    if(m.edit.open())numberEditor(c,m);
+    else if(m.confirmClear)clearConfirm(c,m);
+    else if(m.confirmFixed)fixedConfirm(c,m);
+    else if(m.confirmSignOut)signOutConfirm(c);
 }
 
 void signIn(Canvas& c, const Model& m) {
     const auto& v=m.login;
     const bool waiting=v.state==State::waiting, requesting=v.state==State::requesting;
     const bool failed=v.state==State::failed||v.state==State::denied||v.state==State::expired;
+    screenBase(c,shell);
+    const char* tag=waiting?"Sign in with NVIDIA":!failed?"Sign in":v.state==State::expired?"Code expired":v.state==State::denied?"Sign-in declined":"Sign-in problem";
+    eyebrow(c,120,217,tag,failed?coral:accent,16);
+    const char* head=waiting?"Scan the code with your phone":requesting?"Contacting NVIDIA\xE2\x80\xA6":failed?"Sign-in didn\xE2\x80\x99t finish":"Bring your games to the big screen.";
+    const unsigned lines=drawWrapped(c,Face::black,64,120,250,90,head,880,2,face);
+    float y=250+lines*90.0f+20;
+    char text[640];
     if(waiting) {
-        eyebrow(c,left,268,"SIGN IN WITH NVIDIA",mint);
-        float y=headline(c,96,100,306,"Scan the code with your phone",980,2);
         string_view url(v.url);
         if(url.rfind("https://",0)==0)url.remove_prefix(8);
-        char text[640];
         std::snprintf(text,sizeof(text),"Or visit %.*s on any device and enter this code. Your login stays saved on this PS5.",static_cast<int>(url.size()),url.data());
-        y=body(c,y+28,text,820,3);
+    } else if(requesting||failed)std::snprintf(text,sizeof(text),"%s",v.message);
+    else std::snprintf(text,sizeof(text),"OpenNOW connects to your GeForce NOW account without storing your NVIDIA password. Sign in from your phone, then come straight back to the controller.");
+    y+=drawWrapped(c,Face::semibold,22,120,y,37,text,800,3,failed?coral:muted)*37.0f;
+    if(waiting) {
         string_view code(v.code);
         unsigned cells=0;for(char ch:code)cells+=ch!='-';
-        const float cell=cells>10?64:84, gap=12;
-        float x=left;y+=40;
-        for(std::size_t i=0;i<code.size();++i) {
-            if(code[i]=='-'){c.roundRect(x+2,y+51,28,6,3,hairline);x+=32+gap;continue;}
-            c.roundRect(x,y,cell,108,14,surface);
-            const char ch[2]{code[i],0};
-            const float w=textWidth(Face::mono,60,ch);
-            label(c,Face::mono,60,x+cell/2-w/2,y+54,ch,ink);
-            x+=cell+gap;
-        }
-        char expiry[64];std::snprintf(expiry,sizeof(expiry),"\xC2\xB7 code expires in %u:%02u",v.expiresIn/60,v.expiresIn%60);
-        c.disc(left+6,y+142,6,mint);
-        const float w=label(c,Face::bold,24,left+26,y+142,"Waiting for approval",ink);
-        label(c,Face::semibold,24,left+26+w+14,y+142,expiry,dim);
-        static unsigned char temp[qrcodegen_BUFFER_LEN_MAX],qr[qrcodegen_BUFFER_LEN_MAX];
-        if(qrcodegen_encodeText(v.qrUrl,temp,qr,qrcodegen_Ecc_MEDIUM,1,20,qrcodegen_Mask_AUTO,true)) {
-            const int size=qrcodegen_getSize(qr);
-            const int module=std::max(2,290/size);
-            const float qrSize=static_cast<float>(module*size);
-            const float pw=qrSize+80, ph=qrSize+80+24+30;
-            const float px=right-pw, py=540-ph/2;
-            c.roundRect(px,py,pw,ph,28,white);
-            for(int qy=0;qy<size;++qy)for(int qx=0;qx<size;++qx)
-                if(qrcodegen_getModule(qr,qx,qy))c.rectangle(static_cast<unsigned>(px+40)+qx*module,static_cast<unsigned>(py+40)+qy*module,module,module,ground);
-            const float lw=textWidth(Face::extrabold,22,"Scan to sign in");
-            label(c,Face::extrabold,22,px+pw/2-lw/2,py+40+qrSize+24+15,"Scan to sign in",ground);
+        const float cell=cells>10?56:72;
+        float x=120;y+=36;
+        for(char ch:code) {
+            if(ch=='-'){c.roundRect(x+4,y+45,20,5,2.5f,face,90);x+=28+10;continue;}
+            c.roundRect(x,y,cell,96,20,face,18);
+            c.roundRectStroke(x,y,cell,96,20,1,face,seamAlpha);
+            const char letter[2]{ch,0};
+            labelCenter(c,Face::mono,48,x+cell/2,y+48,letter,face);
+            x+=cell+10;
         }
     } else {
-        eyebrow(c,left,268,failed?(v.state==State::expired?"CODE EXPIRED":v.state==State::denied?"SIGN-IN DECLINED":"SIGN-IN PROBLEM"):"GEFORCE NOW ON PS5",failed?coral:mint);
-        const char* head=requesting?"Contacting NVIDIA":failed?"Sign-in didn\xE2\x80\x99t finish":"Play your cloud library";
-        float y=headline(c,96,100,306,head,1200,2);
-        if(failed)detailCard(c,y+32,v.message,"",coral);
-        else y=body(c,y+28,requesting?v.message:"Sign in with your NVIDIA account using your phone. OpenNOW keeps your login saved on this PS5.",900,3);
-        if(!requesting)button(c,left,failed?y+150:y+48,Glyph::cross,failed?"Try again":"Sign in",true);
+        const Button start{Glyph::cross,failed?"Try again":"Sign in with NVIDIA",true};
+        actionButton(c,start,120,668,72,640,22,34,!requesting);
+        if(!requesting)focusFrame(c,120,668,640,72,26);
     }
-    label(c,Face::semibold,22,left,hintY,"Unofficial client \xC2\xB7 not affiliated with NVIDIA or Sony",dim);
-    const Hint r[]={closeApp};
-    hints(c,nullptr,0,r,1);
+    char status[96];
+    Color tone=muted;
+    if(waiting){std::snprintf(status,sizeof(status),"Waiting for approval \xC2\xB7 code expires in %u:%02u",v.expiresIn/60,v.expiresIn%60);tone=mint;}
+    else if(requesting){std::snprintf(status,sizeof(status),"Talking to NVIDIA\xE2\x80\xA6");tone=accent;}
+    else std::snprintf(status,sizeof(status),"Unofficial client \xC2\xB7 not affiliated with NVIDIA or Sony");
+    dot(c,125,859,tone);
+    label(c,Face::semibold,18,142,859,status,muted);
+    panel(c,1281,275,478,530,40,true);
+    c.roundRect(1340,314,360,360,26,face);
+    static unsigned char temp[qrcodegen_BUFFER_LEN_MAX],qr[qrcodegen_BUFFER_LEN_MAX];
+    if(waiting&&qrcodegen_encodeText(v.qrUrl,temp,qr,qrcodegen_Ecc_MEDIUM,1,20,qrcodegen_Mask_AUTO,true)) {
+        const int size=qrcodegen_getSize(qr);
+        const int module=std::max(2,296/size);
+        const int origin=static_cast<int>(1520-module*size/2.0f), top=static_cast<int>(494-module*size/2.0f);
+        for(int qy=0;qy<size;++qy)for(int qx=0;qx<size;++qx)
+            if(qrcodegen_getModule(qr,qx,qy))c.rectangle(static_cast<unsigned>(origin+qx*module),static_cast<unsigned>(top+qy*module),module,module,black);
+    } else {
+        c.ring(1520,481,32,5,faceText);c.ring(1520,481,13,5,faceText);
+        labelCenter(c,Face::black,19,1520,558,requesting?"Getting a code\xE2\x80\xA6":"Ready when you are",faceText);
+    }
+    labelCenter(c,Face::black,22,1520,708,"Scan with your phone",face);
+    labelCenter(c,Face::semibold,16,1520,754,waiting?"Opens NVIDIA sign-in with this code filled in":"A QR code appears after sign-in starts",muted);
+    const Hint left[]={closeAppHint};
+    const Hint right[]={{Glyph::cross,failed?"Try again":"Sign in"}};
+    chrome(c,m,"Welcome to OpenNOW",false,left,1,right,waiting||requesting?0:1);
 }
+
+void searchScreen(Canvas& c, const Model& m) {
+    storeScreen(c,m,false);
+    sheetBackdrop(c);
+    const auto& s=m.search;
+    const float x=96, y=300, w=1728, h=616;
+    sheet(c,x,y,w,h,40);
+    eyebrow(c,x+40,y+44,"Search the GeForce NOW catalog",accent,15);
+    char count[32];std::snprintf(count,sizeof(count),"%zu / %zu",std::strlen(s.text),sizeof(s.text)-1);
+    labelRight(c,Face::mono,15,x+w-40,y+44,count,muted);
+    const float fx=x+28, fy=y+72, fw=w-56, fh=84, cy=fy+fh/2;
+    c.roundRect(fx,fy,fw,fh,28,face,18);
+    c.roundRectStroke(fx,fy,fw,fh,28,1,face,seamAlpha);
+    c.ring(fx+42,cy-4,11,3,face);c.line(fx+50,cy+4,fx+58,cy+12,3.4f,face);
+    const float room=fw-110-40;
+    string_view text(s.text);
+    while(!text.empty()&&textWidth(Face::black,36,text)>room)text.remove_prefix(1);
+    float caret=fx+84;
+    if(text.empty())label(c,Face::black,36,fx+84,cy,"Type a game title",muted);
+    else caret+=label(c,Face::black,36,fx+84,cy,text,face)+4;
+    c.roundRect(caret,cy-22,4,44,2,accent);
+    const float x0=x+30, y0=y+186;
+    for(unsigned i=0;i<CatalogSearch::count;++i) {
+        const unsigned col=CatalogSearch::column(i), row=CatalogSearch::row(i);
+        const float kx=col<10?x0+col*124.0f:x0+1296+(col-11)*124.0f, ky=y0+row*88.0f;
+        const bool focused=i==s.selected;
+        if(focused){c.roundRect(kx,ky,112,76,22,face);focusFrame(c,kx,ky,112,76,22);}
+        else {c.roundRect(kx,ky,112,76,22,face,18);c.roundRectStroke(kx,ky,112,76,22,1,face,seamAlpha);}
+        const Color ink=focused?faceText:face;
+        if(CatalogSearch::keys[i]==' ') {
+            c.line(kx+38,ky+34,kx+38,ky+46,3,ink);c.line(kx+38,ky+46,kx+74,ky+46,3,ink);c.line(kx+74,ky+46,kx+74,ky+34,3,ink);
+        } else {
+            const char key[2]{CatalogSearch::keys[i],0};
+            labelCenter(c,Face::black,30,kx+56,ky+38,key,ink);
+        }
+    }
+    label(c,Face::semibold,17,x+40,y+h-36,"Searches the full NVIDIA catalog by title. Results open in Store.",muted);
+    const Hint left[]={{Glyph::circle,"Cancel"},{Glyph::square,"Backspace"},{Glyph::triangle,"Clear"}};
+    const Hint right[]={{Glyph::cross,"Type"},{Glyph::options,"Search",Glyph::none,nullptr,*s.text?mint:face}};
+    chrome(c,m,"Search",false,left,3,right,2);
+}
+
+void gameHeader(Canvas& c, const Game& game) {
+    c.roundRect(120,72,42,42,10,storeInfo(game.store).color);
+    c.roundRectStroke(120,72,42,42,10,1,face,seamAlpha);
+    storeMark(c,141,93,28,game.store);
+    fitted(c,Face::black,19,178,84,game.title,900,face);
+    label(c,Face::bold,15,178,105,storeName(game.store),muted);
+}
+void statusPill(Canvas& c, float rightX, float cy, const char* text, Color tone) {
+    const float w=22+9+10+textWidth(Face::mono,15,text,0.12f)+22, x=rightX-w;
+    c.roundRect(x,cy-22,w,44,22,tone,26);
+    c.roundRectStroke(x,cy-22,w,44,22,1.2f,tone,140);
+    dot(c,x+22+4.5f,cy,tone);
+    label(c,Face::mono,15,x+22+9+10,cy,text,tone,0.12f);
+}
+void stageLine(Canvas& c, float cy, int number, const char* text, const char* sub, int state, Color tone) {
+    const float cx=140;
+    if(state==2){c.disc(cx,cy,20,mint);c.line(cx-8,cy,cx-2.5f,cy+6,3,faceText);c.line(cx-2.5f,cy+6,cx+8,cy-6,3,faceText);}
+    else if(state==1){c.ring(cx,cy,19,2.5f,tone);c.disc(cx,cy,6,tone);}
+    else {
+        c.ring(cx,cy,19.5f,1.2f,face,56);
+        char n[4];std::snprintf(n,sizeof(n),"%d",number);
+        labelCenter(c,Face::mono,15,cx,cy,n,muted);
+    }
+    const bool two=state==1&&sub;
+    label(c,Face::black,21,178,two?cy-10:cy,text,state==0?muted:face);
+    if(two)label(c,Face::semibold,15,178,cy+15,sub,muted);
+}
+void progress(Canvas& c, const Model& m) {
+    const auto& cv=m.session;
+    const bool connecting=m.screen==Screen::connecting, queued=cv.state==CloudState::queued;
+    const bool queue=queued&&cv.queuePosition>=0, setup=queued&&!queue&&cv.setupStep>=0;
+    const Game* game=*cv.current.title?&cv.current:nullptr;
+    stageBackground(c,m,game);
+    if(game)gameHeader(c,*game);
+    const Color tone=queue?yellow:accent;
+    statusPill(c,1800,93,connecting?"CONNECTING":queue?"IN QUEUE":queued?"PREPARING":"STARTING",tone);
+    eyebrow(c,120,223,connecting?"Connecting your stream":"Starting your session",tone,16);
+    const char* head=connecting?"Connecting stream":queue?"You\xE2\x80\x99re in line":setup?"Preparing your game":queued?"Almost ready":"Starting your session";
+    const char* text=connecting?"Your cloud rig is ready. The picture appears as soon as the first video frame arrives.":
+        queue?"NVIDIA is finding a cloud rig for your session. This screen moves on by itself, so you can put the controller down.":
+        queued?"NVIDIA is getting the server ready. This screen moves on by itself.":"Asking NVIDIA for a cloud session. This usually takes a few seconds.";
+    const bool dial=queue||setup;
+    fitted(c,Face::black,80,120,293,head,dial?1060:1680,face,-0.02f);
+    drawWrapped(c,Face::semibold,22,120,356,33,text,860,3,muted);
+    const int active=connecting?3:queue?1:queued?2:0;
+    stageLine(c,663,1,"Session requested",nullptr,active>0?2:1,tone);
+    stageLine(c,729,2,"Waiting for a rig","Position comes from GeForce NOW",active>1?2:active==1?1:0,tone);
+    stageLine(c,795,3,"Setting up the rig",nullptr,active>2?2:active==2?1:0,tone);
+    stageLine(c,861,4,"Connecting the stream",nullptr,active==3?1:0,tone);
+    if(dial) {
+        constexpr float cx=1500, cy=510;
+        c.ring(cx,cy,258,1.5f,face,56);
+        labelCenter(c,Face::mono,16,cx,cy-121,queue?"QUEUE POSITION":"SETUP STEP",face,0.12f);
+        char number[16];std::snprintf(number,sizeof(number),"%d",queue?cv.queuePosition:cv.setupStep);
+        const float size=std::strlen(number)>3?130:200;
+        labelCenter(c,Face::black,size,cx,cy-7,number,tone,-0.03f);
+        labelCenter(c,Face::bold,19,cx,cy+118,"Updates when GeForce NOW reports it",muted);
+    }
+    const Hint end{Glyph::options,m.streaming?"End session":queue?"Leave queue":"Cancel session",Glyph::touchpad,"Hold"};
+    hintRow(c,&end,1,1800-hintRowWidth(&end,1));
+    if(m.streaming) {
+        const Hint left[]={{Glyph::touchpad,"Mouse"},{Glyph::options,"Keyboard",Glyph::triangle},{Glyph::options,"Back",Glyph::square}};
+        hintRow(c,left,3,120);
+        fitted(c,Face::mono,15,120,930,cv.message,1200,muted);
+    } else fitted(c,Face::mono,15,120,hintY,cv.message,1200,muted);
+}
+
+void failure(Canvas& c, const Model& m) {
+    const auto& cv=m.session;
+    const Screen s=m.screen;
+    const Game* game=*cv.current.title?&cv.current:nullptr;
+    stageBackground(c,m,game);
+    if(game)gameHeader(c,*game);
+    statusPill(c,1800,93,s==Screen::streamEnded?"STREAM ENDED":s==Screen::cleanupFailed?"SESSION RUNNING":"NOT STARTED",coral);
+    eyebrow(c,120,223,s==Screen::streamEnded?"Stream ended":s==Screen::cleanupFailed?"Session still running":"Couldn\xE2\x80\x99t start",coral,16);
+    const char* head=s==Screen::streamEnded?"The connection to your game dropped":s==Screen::cleanupFailed?"We couldn\xE2\x80\x99t end the cloud session":"The game didn\xE2\x80\x99t start";
+    const char* text=s==Screen::streamEnded?"OpenNOW stopped the cloud session, so nothing keeps running on your account. You can try again right away.":
+        s==Screen::cleanupFailed?"It may still be running on your account. End it before starting another game.":
+        "The cloud session could not be started or confirmed. You can try again or go back.";
+    const unsigned lines=drawWrapped(c,Face::black,72,120,250,80,head,1200,2,face);
+    float y=250+lines*80.0f+16;
+    y+=drawWrapped(c,Face::semibold,22,120,y,33,text,900,2,muted)*33.0f+32;
+    char second[256]{};
+    if(game) {
+        char name[48];
+        std::snprintf(second,sizeof(second),"%s \xC2\xB7 %s \xC2\xB7 %s",cv.current.title,storeName(cv.current.store),settingsName(m.launch,name,sizeof(name)).data());
+    }
+    const float ch=*second?104:72;
+    panel(c,120,y,980,ch,26,true);
+    c.roundRect(120+18,y+18,4,ch-36,2,coral);
+    fitted(c,Face::mono,17,148,y+36,*cv.message?cv.message:"No details reported",930,face);
+    if(*second)fitted(c,Face::semibold,16,148,y+70,second,930,muted);
+    y+=ch+40;
+    if(s==Screen::cleanupFailed) {
+        const Hint end{Glyph::options,"End session",Glyph::touchpad,"Hold"};
+        const float w=hintWidth(end)+48;
+        c.roundRect(120,y,w,72,26,face);
+        focusFrame(c,120,y,w,72,26);
+        drawHint(c,end,144,y+36,hintSize,hintLabel);
+    } else {
+        const float pw=buttonWidth({Glyph::cross,"Try again",true});
+        actionButton(c,{Glyph::cross,"Try again",true},120,y);
+        focusFrame(c,120,y,pw,72,26);
+        actionButton(c,s==Screen::streamEnded?Button{Glyph::square,"Back to games"}:Button{Glyph::circle,"Back"},120+pw+14,y);
+    }
+    const Hint left[]={s==Screen::launchFailed?Hint{Glyph::circle,"Back"}:closeAppHint};
+    hintRow(c,left,1,120);
+    if(s==Screen::cleanupFailed) {
+        const Hint end{Glyph::options,"End session",Glyph::touchpad,"Hold"};
+        hintRow(c,&end,1,1800-hintRowWidth(&end,1));
+    } else {
+        const Hint right[]={{Glyph::square,"Back to games"},{Glyph::cross,"Try again"}};
+        const unsigned n=s==Screen::streamEnded?2:1;
+        hintRow(c,right+2-n,n,1800-hintRowWidth(right+2-n,n));
+    }
+}
+
+void keyGrid(Canvas& c, const StreamKeyboard& k, bool ready, float x0, float y0, float span, float keyH, float rowPitch) {
+    const float pitch=span/StreamKeyboard::units, big=keyH*0.40f, small=keyH*0.28f;
+    for(unsigned i=0;i<StreamKeyboard::count;++i) {
+        const auto& key=StreamKeyboard::keys[i];
+        const float x=x0+StreamKeyboard::column(i)*pitch, y=y0+StreamKeyboard::row(i)*rowPitch, w=key.width*pitch-12;
+        const bool focused=i==k.selected, latched=k.latched(i);
+        if(focused){c.roundRect(x,y,w,keyH,18,face);focusFrame(c,x,y,w,keyH,18);}
+        else if(latched){c.roundRect(x,y,w,keyH,18,mint,46);c.roundRectStroke(x,y,w,keyH,18,1.5f,mint,170);}
+        else {c.roundRect(x,y,w,keyH,18,face,18);c.roundRectStroke(x,y,w,keyH,18,1,face,seamAlpha);}
+        const Color color=focused?faceText:latched?mint:ready?face:muted;
+        const float cy=y+keyH/2;
+        if(key.vk>=0x25&&key.vk<=0x28) {
+            const float cx=x+w/2, a=keyH*0.15f, dx=key.vk==0x25?-1.0f:key.vk==0x27?1.0f:0.0f, dy=key.vk==0x26?-1.0f:key.vk==0x28?1.0f:0.0f;
+            c.line(cx-dx*a,cy-dy*a,cx+dx*a,cy+dy*a,3.4f,color);
+            c.line(cx+dx*a,cy+dy*a,cx+dx*a*0.25f-dy*a*0.75f,cy+dy*a*0.25f+dx*a*0.75f,3.4f,color);
+            c.line(cx+dx*a,cy+dy*a,cx+dx*a*0.25f+dy*a*0.75f,cy+dy*a*0.25f-dx*a*0.75f,3.4f,color);
+            continue;
+        }
+        const char* name=k.label(i);
+        const bool word=name[1]!=0;
+        labelCenter(c,word?Face::extrabold:Face::black,word?small:big,x+w/2,cy,name,color);
+    }
+}
+const char* modifierText(const StreamKeyboard& k, char* buffer, std::size_t size) {
+    std::size_t at=0;buffer[0]=0;
+    for(const auto& [on,name]:{std::pair{k.shift,"SHIFT"},std::pair{k.caps,"CAPS LOCK"},std::pair{k.ctrl,"CTRL"},std::pair{k.alt,"ALT"}})
+        if(on)at+=std::snprintf(buffer+at,size-at,"%s%s",at?" + ":"",name);
+    return buffer;
+}
+void streamKeyboard(Canvas& c, const Model& m) {
+    const auto& k=m.keyboard;
+    const Game* game=*m.session.current.title?&m.session.current:nullptr;
+    stageBackground(c,m,game);
+    if(game)gameHeader(c,*game);
+    statusPill(c,1800,93,m.inputReady?"INPUT READY":"WAITING FOR INPUT",m.inputReady?mint:yellow);
+    eyebrow(c,120,223,game?"Keyboard \xC2\xB7 typing into your game":"Keyboard",accent,16);
+    fitted(c,Face::black,56,120,276,m.inputReady?"Keys go straight to your game":"Waiting for game input",1100,m.inputReady?face:yellow,-0.02f);
+    char state[48];
+    modifierText(k,state,sizeof(state));
+    labelRight(c,Face::mono,15,1800,276,*state?state:"NO MODIFIERS",*state?mint:muted,0.12f);
+    const unsigned rows=StreamKeyboard::row(StreamKeyboard::count-1)+1;
+    panel(c,96,328,1728,rows*96.0f+44,36,true);
+    keyGrid(c,k,m.inputReady,124,350,1684,84,96);
+    label(c,Face::semibold,17,120,930,m.inputReady?"The picture returns when you close the keyboard. Your game and audio keep running.":
+        "Key presses are ignored until the game\xE2\x80\x99s input channel opens. The picture returns when you close the keyboard.",muted);
+    const Hint left[]={{Glyph::circle,"Back to game"}};
+    const Hint right[]={{Glyph::l1,"Shift"},{Glyph::square,"Backspace"},{Glyph::triangle,"Space"},{Glyph::cross,"Press key"}};
+    hintRow(c,left,1,120);
+    hintRow(c,right,4,1800-hintRowWidth(right,4));
+}
+}
+
+void renderOverlay(Canvas& c, const Overlay& o) noexcept {
+    loadFonts();
+    const float x=64, y=40, w=1792, h=72, cy=y+h/2;
+    c.roundRect(x,y,w,h,36,shell);
+    c.roundRectStroke(x,y,w,h,36,1,face,seamAlpha);
+    const auto& k=o.keyboard;
+    const char* mode=!o.inputReady?"WAITING FOR GAME INPUT":k.open?(o.launcher?"KEYBOARD \xC2\xB7 MOUSE PAUSED":"KEYBOARD"):"LAUNCHER MOUSE";
+    const Color tone=o.inputReady?accent:yellow;
+    dot(c,x+30,cy,tone);
+    label(c,Face::mono,15,x+46,cy,mode,tone,0.12f);
+    static const char* speeds[]={"Move \xC2\xB7 Slow","Move \xC2\xB7 Normal","Move \xC2\xB7 Fast"};
+    Hint items[8]{};unsigned count=0;
+    if(!k.open) {
+        items[count++]={Glyph::stick,speeds[std::min(o.speed,2U)]};
+        items[count++]={Glyph::r2,"Left click"};
+        items[count++]={Glyph::l2,"Right click"};
+        items[count++]={Glyph::dpad,"Scroll"};
+        items[count++]={Glyph::square,"Speed"};
+        items[count++]={Glyph::triangle,"Keyboard"};
+    } else items[count++]={Glyph::circle,o.launcher?"Back to mouse":"Close"};
+    items[count++]=o.launcher?Hint{Glyph::options,"Exit",Glyph::r3}:Hint{Glyph::options,"Close",Glyph::triangle};
+    hintRow(c,items,count,x+w-28-hintRowWidth(items,count),cy);
+    if(!k.open)return;
+    const float ph=500, py=1080-40-ph;
+    c.roundRect(x,py,w,ph,36,shell);
+    c.roundRectStroke(x,py,w,ph,36,1,face,seamAlpha);
+    eyebrow(c,x+32,py+38,o.inputReady?"Keyboard \xC2\xB7 US QWERTY \xC2\xB7 typed keys are not shown":"Key presses are ignored until the game\xE2\x80\x99s input channel opens",tone,14,1200);
+    char state[48];
+    modifierText(k,state,sizeof(state));
+    if(*state)labelRight(c,Face::mono,14,x+w-32,py+38,state,mint,0.12f);
+    keyGrid(c,k,o.inputReady,x+28,py+70,w-44,62,72);
+    const Hint l[]={{Glyph::cross,"Press key"},{Glyph::square,"Backspace"},{Glyph::triangle,"Space"},{Glyph::l1,"Shift"},{Glyph::circle,o.launcher?"Back to mouse":"Close"}};
+    hintRow(c,l,5,x+32,py+ph-36);
 }
 
 Screen screenFor(const Inputs& in) noexcept {
@@ -1249,8 +1597,23 @@ const CloudView& catalogFor(Section section,const CloudView& session,const Cloud
     return section==Section::library?library:session;
 }
 
-unsigned settingsRows(SettingsPane pane) noexcept {
-    return pane==SettingsPane::stream?static_cast<unsigned>(StreamRow::count):pane==SettingsPane::cache?2:pane==SettingsPane::account?1:0;
+unsigned settingsRows(SettingsPane pane, const ControllerSettings& controller) noexcept {
+    switch(pane) {
+    case SettingsPane::stream: return static_cast<unsigned>(StreamRow::count);
+    case SettingsPane::controller: return static_cast<unsigned>(controller.persistSupported?ControllerRow::count:ControllerRow::persistGameSettings);
+    case SettingsPane::cache: return 2;
+    case SettingsPane::account: return 1;
+    case SettingsPane::display: case SettingsPane::about: return 0;
+    }
+    return 0;
+}
+
+void adjustController(ControllerSettings& settings, unsigned row, int direction) noexcept {
+    if(row==static_cast<unsigned>(ControllerRow::persistGameSettings)){if(direction)settings.persistGameSettings=direction>0;return;}
+    if(row>static_cast<unsigned>(ControllerRow::persistGameSettings))return;
+    int* values[]={&settings.leftDeadzone,&settings.rightDeadzone,&settings.vibration,&settings.mouseSensitivity};
+    const auto& range=controllerRanges[row];
+    *values[row]=std::clamp(*values[row]+direction*range.step,range.min,range.max);
 }
 
 unsigned qualifiedPresets(StreamProfile* out, unsigned capacity, bool (*available)(const StreamSettings&)) noexcept {
@@ -1271,19 +1634,17 @@ unsigned storeSiblings(const CloudView& cloud, unsigned index, unsigned* out, un
 
 void render(Canvas& c, const Model& m) noexcept {
     loadFonts();
-    c.clear(ground);
-    const bool tabs=m.screen==Screen::grid||m.screen==Screen::catalogLoading||m.screen==Screen::catalogEmpty||
-                    m.screen==Screen::catalogError||m.screen==Screen::settings;
-    topBar(c,m,tabs);
     switch(m.screen) {
     case Screen::signIn: signIn(c,m);break;
-    case Screen::catalogLoading: case Screen::catalogEmpty: case Screen::catalogError: catalogStatus(c,m);break;
-    case Screen::cleanupFailed: case Screen::streamEnded: case Screen::launchFailed: failure(c,m);break;
-    case Screen::grid: grid(c,m);break;
-    case Screen::search: search(c,m);break;
+    case Screen::catalogLoading: case Screen::catalogEmpty: case Screen::catalogError: case Screen::grid:
+        if(m.section==Section::library)libraryScreen(c,m);
+        else storeScreen(c,m);
+        break;
+    case Screen::search: searchScreen(c,m);break;
     case Screen::detail: detail(c,m);break;
     case Screen::settings: settings(c,m);break;
     case Screen::launching: case Screen::connecting: progress(c,m);break;
+    case Screen::cleanupFailed: case Screen::streamEnded: case Screen::launchFailed: failure(c,m);break;
     case Screen::keyboard: streamKeyboard(c,m);break;
     }
 }

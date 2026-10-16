@@ -171,16 +171,19 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
     assert(browsers[0].focus==0&&current()==Screen::grid);
     press(PS5_PAD_BUTTON_LEFT);assert(browsers[0].focus==0&&command.load()==0);
     press(PS5_PAD_BUTTON_UP);assert(browsers[0].focus==0&&command.load()==0);
+    assert(opennow::ui::gridColumns(Section::library)==7&&opennow::ui::gridColumns(Section::browse)==10);
     press(PS5_PAD_BUTTON_RIGHT);assert(browsers[0].focus==1);
     press(PS5_PAD_BUTTON_DOWN);assert(browsers[0].focus==7);
     press(PS5_PAD_BUTTON_DOWN);assert(browsers[0].focus==7&&command.load()==0);
     press(PS5_PAD_BUTTON_RIGHT);assert(browsers[0].focus==7&&command.load()==0);
-    press(PS5_PAD_BUTTON_UP);assert(browsers[0].focus==1);
+    press(PS5_PAD_BUTTON_UP);assert(browsers[0].focus==0);
     press(PS5_PAD_BUTTON_RIGHT);press(PS5_PAD_BUTTON_RIGHT);press(PS5_PAD_BUTTON_RIGHT);
-    assert(browsers[0].focus==4);
+    assert(browsers[0].focus==3);
     press(PS5_PAD_BUTTON_DOWN);assert(browsers[0].focus==7);
     press(PS5_PAD_BUTTON_LEFT);assert(browsers[0].focus==6);
-    press(PS5_PAD_BUTTON_UP);assert(browsers[0].focus==0);
+    press(PS5_PAD_BUTTON_UP);assert(browsers[0].focus==6&&command.load()==0);
+    for(unsigned i=0;i<6;++i)press(PS5_PAD_BUTTON_LEFT);
+    assert(browsers[0].focus==0);
     assert(command.load()==0&&!http.cancelled);
 
     press(PS5_PAD_BUTTON_L1|PS5_PAD_BUTTON_R1);
@@ -323,11 +326,31 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         press(PS5_PAD_BUTTON_RIGHT);assert(!settingsContent&&draft==quality&&command.load()==0);
         press(PS5_PAD_BUTTON_CROSS);assert(!settingsContent&&draft==quality&&command.load()==0);
         testButtons=0;draw(canvas);
+        using opennow::ui::ControllerRow;
+        press(PS5_PAD_BUTTON_DOWN);assert(settingsPane==SettingsPane::controller);
+        assert(opennow::ui::settingsRows(SettingsPane::controller,controllerSettings)==static_cast<unsigned>(ControllerRow::persistGameSettings));
+        press(PS5_PAD_BUTTON_RIGHT);assert(settingsContent&&settingsRow==0&&controllerSettings.leftDeadzone==5);
+        press(PS5_PAD_BUTTON_RIGHT);assert(controllerSettings.leftDeadzone==6);
+        press(PS5_PAD_BUTTON_LEFT);press(PS5_PAD_BUTTON_LEFT);assert(controllerSettings.leftDeadzone==4);
+        for(unsigned i=0;i<60;++i)press(PS5_PAD_BUTTON_RIGHT);
+        assert(controllerSettings.leftDeadzone==50);
+        press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);
+        press(PS5_PAD_BUTTON_LEFT);assert(controllerSettings.vibration==90&&controllerSettings.rightDeadzone==5);
+        press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);assert(settingsRow==3);
+        for(unsigned i=0;i<20;++i)press(PS5_PAD_BUTTON_LEFT);
+        assert(controllerSettings.mouseSensitivity==10);
+        controllerSettings.persistSupported=true;
+        press(PS5_PAD_BUTTON_DOWN);assert(settingsRow==static_cast<unsigned>(ControllerRow::persistGameSettings));
+        press(PS5_PAD_BUTTON_CROSS);assert(!controllerSettings.persistGameSettings);
+        press(PS5_PAD_BUTTON_RIGHT);assert(controllerSettings.persistGameSettings);
+        testButtons=0;draw(canvas);
+        press(PS5_PAD_BUTTON_CIRCLE);assert(!settingsContent&&command.load()==0&&draft==quality);
+        controllerSettings={};
         artworkWanted=true;
         press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_RIGHT);press(PS5_PAD_BUTTON_LEFT);
         assert(!artworkWanted&&command.load()==0);
         press(PS5_PAD_BUTTON_CROSS);assert(artworkWanted);
-        press(PS5_PAD_BUTTON_CIRCLE);press(PS5_PAD_BUTTON_UP);
+        press(PS5_PAD_BUTTON_CIRCLE);press(PS5_PAD_BUTTON_UP);press(PS5_PAD_BUTTON_UP);
         assert(opennow::ui::presetFor(StreamProfile::compatibility,draft).audio_mode==draft.audio_mode);
         assert(draft==quality&&settingsPane==SettingsPane::display&&!settingsContent);
     }
@@ -446,7 +469,7 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         artCache=&cacheArt;
         draft.fps=55;
         const unsigned revision=publishedSettings.revision;
-        press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);assert(settingsPane==SettingsPane::cache);
+        press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);assert(settingsPane==SettingsPane::cache);
         press(PS5_PAD_BUTTON_RIGHT);assert(settingsContent&&settingsRow==0);
         press(PS5_PAD_BUTTON_LEFT);assert(!artworkWanted&&settingsContent);
         press(PS5_PAD_BUTTON_CROSS);assert(artworkWanted);
@@ -458,7 +481,7 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         press(PS5_PAD_BUTTON_UP);press(PS5_PAD_BUTTON_RIGHT);assert(artworkWanted);
         press(PS5_PAD_BUTTON_CIRCLE);assert(!settingsContent);
         artCache=nullptr;
-        press(PS5_PAD_BUTTON_UP);press(PS5_PAD_BUTTON_UP);
+        press(PS5_PAD_BUTTON_UP);press(PS5_PAD_BUTTON_UP);press(PS5_PAD_BUTTON_UP);
         press(PS5_PAD_BUTTON_RIGHT);assert(draft.fps==55);
         press(PS5_PAD_BUTTON_SQUARE);assert(draft==opennow::settingsFor(StreamProfile::quality));
         press(PS5_PAD_BUTTON_CIRCLE);
@@ -500,7 +523,8 @@ bool scenarios(ps5::demo::Canvas& canvas) noexcept {
         testButtons=0;draw(canvas);
         fs::remove_all(parent);
     }
-    press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);press(PS5_PAD_BUTTON_DOWN);assert(settingsPane==SettingsPane::account);
+    for(unsigned i=0;i<4;++i)press(PS5_PAD_BUTTON_DOWN);
+    assert(settingsPane==SettingsPane::account);
     press(PS5_PAD_BUTTON_CROSS);assert(settingsContent&&settingsRow==0);
     press(PS5_PAD_BUTTON_CROSS);assert(confirmSignOut&&command.load()==0);
     press(PS5_PAD_BUTTON_L1);press(PS5_PAD_BUTTON_TRIANGLE);press(PS5_PAD_BUTTON_OPTIONS);

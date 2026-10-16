@@ -165,11 +165,12 @@ State Cache::want(const char* artwork,Kind kind,unsigned frame) noexcept {
     return state;
 }
 
-bool Cache::draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha) noexcept {
+bool Cache::draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha,unsigned visibleHeight) noexcept {
     pthread_mutex_lock(&mutex_);
     const Slot* slot=find(artwork,kind);
     const bool shown=clearRequested_==cleared_&&slot&&slot->state==State::ready&&slot->pixels;
-    if(shown)canvas.imageRounded(static_cast<int>(std::lround(x)),static_cast<int>(std::lround(y)),widthOf(kind),heightOf(kind),slot->pixels,radius,alpha);
+    const unsigned height=visibleHeight&&visibleHeight<heightOf(kind)?visibleHeight:heightOf(kind);
+    if(shown)canvas.imageRounded(static_cast<int>(std::lround(x)),static_cast<int>(std::lround(y)),widthOf(kind),height,slot->pixels,radius,alpha);
     pthread_mutex_unlock(&mutex_);
     return shown;
 }

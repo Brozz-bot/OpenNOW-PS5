@@ -103,6 +103,8 @@ unsigned detailChoice=0;
 SettingsPane settingsPane=SettingsPane::stream;
 bool settingsContent=false;
 unsigned settingsRow=0;
+opennow::ui::ControllerSettings controllerSettings;
+const char* detailAction=nullptr;
 bool confirmSignOut=false;
 opennow::StreamSettings draft{};
 opennow::StreamSettings proposal{};
@@ -685,7 +687,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                     if(view.state==CloudState::idle&&!view.count)requestPage(section,0,1);
                 }
             } else if(screen==Screen::settings) {
-                const unsigned rows=opennow::ui::settingsRows(settingsPane);
+                const unsigned rows=opennow::ui::settingsRows(settingsPane,controllerSettings);
                 if(!settingsContent) {
                     const int pane=static_cast<int>(settingsPane);
                     if(pressed&PS5_PAD_BUTTON_UP)settingsPane=static_cast<SettingsPane>(std::max(pane-1,0));
@@ -695,7 +697,12 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                     if((pressed&PS5_PAD_BUTTON_UP)&&settingsRow>0)--settingsRow;
                     if((pressed&PS5_PAD_BUTTON_DOWN)&&settingsRow+1<rows)++settingsRow;
                     if(settingsPane==SettingsPane::stream)editStream(pressed,caps);
-                    else if(settingsPane==SettingsPane::cache) {
+                    else if(settingsPane==SettingsPane::controller) {
+                        if(pressed&PS5_PAD_BUTTON_LEFT)opennow::ui::adjustController(controllerSettings,settingsRow,-1);
+                        if(pressed&PS5_PAD_BUTTON_RIGHT)opennow::ui::adjustController(controllerSettings,settingsRow,1);
+                        if((pressed&PS5_PAD_BUTTON_CROSS)&&settingsRow==static_cast<unsigned>(opennow::ui::ControllerRow::persistGameSettings))
+                            controllerSettings.persistGameSettings=!controllerSettings.persistGameSettings;
+                    } else if(settingsPane==SettingsPane::cache) {
                         if(settingsRow==0&&(pressed&(PS5_PAD_BUTTON_LEFT|PS5_PAD_BUTTON_RIGHT)))setArtwork(pressed&PS5_PAD_BUTTON_RIGHT);
                         if(settingsRow==0&&(pressed&PS5_PAD_BUTTON_CROSS))setArtwork(!artworkWanted);
                         const auto disk=artCache?artCache->diskStats():opennow::art::DiskStats{};
@@ -709,7 +716,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
             } else {
                 const auto& view=opennow::ui::catalogFor(section,cv,lv);
                 Browser& b=browserFor(section);
-                const unsigned columns=opennow::ui::gridColumns;
+                const unsigned columns=opennow::ui::gridColumns(section);
                 if(view.state==CloudState::catalog&&view.count) {
                     const unsigned rows=(view.count+columns-1)/columns;
                     if(pressed&PS5_PAD_BUTTON_LEFT){if(b.focus>0)--b.focus;else if(view.page>0)requestPage(section,view.page-1,2,-1);}
@@ -790,7 +797,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     opennow::ui::render(c,{screen,shownSection,v,cv,lv,defaults,launch,choices,choiceCount,detailChoice,
         browserFor(shownSection).focus,searchInput,shownSearch,output,streaming,settingsPane,settingsContent,settingsRow,confirmSignOut,
         settings,artCache,++artFrame,keyboard,inputReady,draft,caps,acceptSettings(draft),adjusted,numberEdit,
-        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio});
+        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio,controllerSettings,detailAction});
     return true;
 }
 #ifdef OPENNOW_HOST_PREVIEW
@@ -883,8 +890,9 @@ int main(int argc,char** argv) {
         section=Section::browse;publishedCloud.state=CloudState::loading;browsers[1].focus=13;browsers[1].target=1;browsers[1].pending=1;
     } else if(name=="search") {
         section=Section::browse;searchInput.open=true;std::snprintf(searchInput.text,sizeof(searchInput.text),"DUNGEONS");searchInput.selected=18;
-    } else if(name=="detail"||name=="detail-hardware") {
+    } else if(name=="detail"||name=="detail-hardware"||name=="detail-action") {
         detailOpen=true;detailSection=Section::library;detailChoice=name=="detail-hardware"?2:0;
+        if(name=="detail-action")detailAction="Add to Home Screen";
     } else if(name.rfind("settings",0)==0) {
         section=Section::settings;
         publishedSettings.saved=true;
@@ -894,6 +902,7 @@ int main(int argc,char** argv) {
         if(name=="settings-account"||name=="settings-signout"){settingsPane=SettingsPane::account;settingsContent=true;}
         if(name=="settings-signout")confirmSignOut=true;
         if(name=="settings-about")settingsPane=SettingsPane::about;
+        if(name=="settings-controller"){settingsPane=SettingsPane::controller;settingsContent=true;controllerSettings.persistSupported=true;controllerSettings.leftDeadzone=8;}
         if(name=="settings-save-error"){settingsContent=true;publishedSettings.saved=false;publishedSettings.saveError=28;}
         using opennow::ui::StreamRow;
         const auto custom=opennow::StreamSettings{2560,1440,90,75000,opennow::VideoMode::hevcMain10HdrHardware,opennow::QualityMode::original,opennow::NetworkPolicy::fixed};
