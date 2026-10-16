@@ -10,23 +10,35 @@
 using namespace opennow;
 static Response response(const char* text,long status=200) {return {status,const_cast<char*>(text),std::strlen(text),nullptr};}
 struct Mock {
-    unsigned queries=0,posts=0,deletes=0,calls=0;
-    std::string lookup,launch;
+    unsigned queries=0,posts=0,deletes=0,calls=0,nettests=0,lists=0;
+    std::string lookup,launch,networkTest;
     const char* catalog=nullptr;
     const char* created=nullptr;
     bool lookupError=false;
 };
 static constexpr char catalog[]=R"({"data":{"apps":{"items":[{"id":"app-uuid","title":"Fixture game","gfn":{"playabilityState":"PLAYABLE"},"variants":[{"id":"41","appStore":"STEAM","gfn":{"status":"AVAILABLE","library":{"status":"MANUAL"}}},{"id":"42","appStore":"XBOX","gfn":{"status":"AVAILABLE","library":{"status":"PLATFORM_SYNC","playStatus":"PLAYABLE"}}}]}]}}})";
-static Response request(void* context,const char* method,const char* url,const char* body,const char*,const char*) {
+static Response request(void* context,const char* method,const char* url,const char* body,const char* bearer,const char* device) {
     auto& m=*static_cast<Mock*>(context);++m.calls;
-    if(std::strstr(url,"serviceUrls"))return response(R"({"gfnServiceInfo":{"gfnServiceEndpoints":[{"idpId":"PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg","streamingServiceUrl":"https://test.geforcenow.com/"}]}})");
-    if(std::strstr(url,"serverInfo"))return response(R"({"requestStatus":{"serverId":"GFN-PC"}})");
+    if(std::strstr(url,"serviceUrls")) {
+        assert(!std::strcmp(method,"GET")&&!body&&!bearer&&!device);
+        return response(R"({"gfnServiceInfo":{"gfnServiceEndpoints":[{"idpId":"PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg","streamingServiceUrl":"https://test.geforcenow.com/"}]}})");
+    }
+    assert(bearer&&!std::strcmp(bearer,"jwt")&&device&&!std::strcmp(device,"device"));
+    if(std::strstr(url,"serverInfo"))return response(R"({"requestStatus":{"statusCode":1,"serverId":"GFN-PC"},"metaData":[]})");
     if(std::strstr(url,"graphql")) {
         ++m.queries;m.lookup=body;
         auto r=response(m.catalog?m.catalog:catalog);if(m.lookupError)r.error="Fixture lookup network failure";return r;
     }
-    if(std::strstr(url,"nettestsession"))return response(R"({"requestStatus":{"statusCode":1},"netTestSession":{"sessionId":"net-fixture"}})");
-    if(!std::strcmp(method,"POST")) {
+    if(!std::strcmp(url,"https://test.geforcenow.com/v2/nettestsession")) {
+        assert(!std::strcmp(method,"POST")&&m.queries==1&&!m.posts);
+        ++m.nettests;m.networkTest=body;
+        return response(R"({"requestStatus":{"statusCode":1},"netTestSession":{"sessionId":"net-fixture"}})");
+    }
+    if(!std::strcmp(method,"GET")&&!std::strcmp(url,"https://test.geforcenow.com/v2/session")) {
+        ++m.lists;return response(R"({"requestStatus":{"statusCode":1},"sessions":[]})");
+    }
+    if(!std::strcmp(method,"POST")&&!std::strcmp(url,"https://test.geforcenow.com/v2/session?keyboardLayout=en-US_qwerty&languageCode=en_US")) {
+        assert(m.nettests==1);
         ++m.posts;m.launch=body;
         return response(m.created?m.created:R"({"requestStatus":{"statusCode":1},"session":{"sessionId":"new-fixture","status":0,"queuePosition":2}})");
     }
@@ -58,7 +70,21 @@ int main() {
         auto* launch=cJSON_Parse(mock.launch.c_str());assert(launch);
         const auto* data=cJSON_GetObjectItemCaseSensitive(launch,"sessionRequestData");
         assert(cJSON_GetObjectItemCaseSensitive(data,"appId")->valueint==42);
-        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(data,"cmsId")->valuestring,"42"));cJSON_Delete(launch);
+        assert(!cJSON_GetObjectItemCaseSensitive(data,"cmsId"));
+        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(data,"internalTitle")->valuestring,"Fixture game"));
+        assert(!std::strcmp(cJSON_GetObjectItemCaseSensitive(data,"networkTestSessionId")->valuestring,"net-fixture"));
+        assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data,"accountLinked")));
+        const auto* monitor=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(data,"clientRequestMonitorSettings"),0);
+        assert(cJSON_GetObjectItemCaseSensitive(monitor,"widthInPixels")->valueint==settings.width);
+        assert(cJSON_GetObjectItemCaseSensitive(monitor,"heightInPixels")->valueint==settings.height);
+        assert(cJSON_GetObjectItemCaseSensitive(monitor,"framesPerSecond")->valueint==settings.fps);
+        const auto* features=cJSON_GetObjectItemCaseSensitive(data,"requestedStreamingFeatures");
+        assert(cJSON_GetObjectItemCaseSensitive(features,"maxBitrateKbps")->valueint==settings.bitrate_kbps);cJSON_Delete(launch);
+        auto* network=cJSON_Parse(mock.networkTest.c_str());assert(network);
+        const auto* profile=cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(network,"netTestRequestData"),"netTestProfile");
+        assert(cJSON_GetObjectItemCaseSensitive(profile,"widthInPixels")->valueint==settings.width);
+        assert(cJSON_GetObjectItemCaseSensitive(profile,"heightInPixels")->valueint==settings.height);
+        assert(cJSON_GetObjectItemCaseSensitive(profile,"framesPerSecond")->valueint==settings.fps);cJSON_Delete(network);
         const auto calls=mock.calls;
         cloud.launchId("41","STEAM","jwt","device",2,settings);
         assert(mock.calls==calls&&!std::strcmp(cloud.session().id,"new-fixture"));
@@ -81,9 +107,10 @@ int main() {
         R"({"requestStatus":{"statusCode":1,"unifiedErrorCode":"0x4af1201e"},"session":{"sessionId":"existing-fixture","status":2}})",
         R"({"requestStatus":{"statusCode":1},"session":{"sessionId":"existing-fixture","status":2,"errorCode":1257316382}})"}) {
         Mock mock;mock.created=conflict;Cloud cloud(request,&mock);cloud.launchId("42","XBOX","jwt","device",1,{});
-        assert(mock.posts==1&&cloud.view().launchError&&cloud.view().state==CloudState::failed);
-        assert(std::strstr(cloud.view().message,"already active")&&!*cloud.session().id);
-        cloud.tick("jwt","device",20);assert(cloud.stop("jwt","device")&&!mock.deletes);
+        assert(mock.posts==1&&cloud.view().launchError&&cloud.view().sessionConflict&&cloud.view().state==CloudState::failed);
+        assert(!std::strcmp(cloud.view().message,"A cloud session is already active. Resume or stop it before launching another game")&&!*cloud.session().id);
+        cloud.tick("jwt","device",20);
+        assert(cloud.recoveryRequired()&&!cloud.stop("jwt","device")&&!mock.deletes&&!mock.lists&&mock.posts==1);
     }
     std::puts("forward launch tests passed");
 }

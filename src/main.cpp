@@ -192,7 +192,7 @@ void* worker(void*) {
     std::snprintf(restoring.message,sizeof(restoring.message),"Checking saved NVIDIA login...");
     publish(restoring);
     login.restore(id,sceKernelGetProcessTime()/1000000);
-    bool catalogLoaded=false,streamAttempted=false;
+    bool catalogLoaded=false,streamAttempted=false,skipCatalogRecovery=false;
     std::uint64_t streamGeneration=0;
     opennow::sessionFile::Saved retainedProfile;
     bool resumeAllowed=true,profileSaveFailed=false;
@@ -236,6 +236,7 @@ void* worker(void*) {
         Request request;
         const int action=takeCommand(request);
         if(action==10||action==11||action==18) {
+            skipCatalogRecovery=action==18;
             forwardPending=false;forwardLaunchMode.store(false);
             http.cancelled.store(false);
             refreshHttp.cancelled.store(true);
@@ -302,7 +303,8 @@ void* worker(void*) {
                 pthread_mutex_lock(&viewMutex);publishedLibrary=cloud.library();pthread_mutex_unlock(&viewMutex);
                 cloud.load(login.cloudToken(),id,"");
                 catalogLoaded=true;
-                recoverSession(now/1000000);
+                if(!skipCatalogRecovery)recoverSession(now/1000000);
+                skipCatalogRecovery=false;
             }
             const bool idle=!*cloud.session().id;
             if(action==5&&idle&&request.index>=0) {
