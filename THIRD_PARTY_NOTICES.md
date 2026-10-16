@@ -42,6 +42,12 @@ OpenNOW PS5 is an independent native adaptation made possible by **OpenCloudGami
   Its credit to `https://ps5-forwarder.mph.am`, bundled module 1212, is
   preserved. PNG streaming is original project code. Game artwork belongs to
   its publishers, is fetched from GFN at runtime, and is not redistributed.
+- The independent tile installer's read-only process lookup references the
+  public SDK v0.42, websrv, etaHEN, ShadowMountPlus, and matching FreeBSD
+  releng/11.4 sources. Research pins and the AppInfo layout disagreement are
+  documented in [resolver evidence](docs/TILE_INSTALLER_RESOLVER.md) and
+  `upstream-lock.json`. These are ABI and behavior references, not copied
+  credential-mutation implementations. No app process is elevated.
 
 The unmodified template inputs have these SHA-256 pins:
 
@@ -65,6 +71,15 @@ this repository. No Sony SDK file is included.
 Target C++ compilation uses the LLVM libc++ headers distributed by the public
 SDK. Those headers retain the Apache-2.0 WITH LLVM-exception license recorded
 upstream. The 0.2 application statically links libc++, libc++abi and libunwind from this SDK; their upstream LLVM notices apply.
+
+The independent `opennow-tile-installer.elf` also statically links the public
+SDK's ordinary payload CRT and libc, plus its C++ runtime. Corresponding SDK
+source is revision `4eb701204fc3f8d31e84cf8ca272974e2be9c867` at
+`https://github.com/ps5-payload-dev/sdk`. The SDK is GPL-3.0-or-later except
+where individual files state other terms, including retained FreeBSD notices;
+LLVM runtime notices remain applicable. No Sony runtime is included.
+The ordinary SDK CRT adjusts its own payload process's capabilities during
+startup; it does not receive or modify OpenNOW's PID or credentials.
 
 The PS5 ELF converter and FSELF writer in `tooling/native/` are derived from
 [SharpProspero](https://github.com/SvenGDK/SharpProspero), Copyright (C) 2026
@@ -138,6 +153,19 @@ No proprietary runtime module, encryption key, or game file is included.
 - Device authorization behavior adapted from **OpenCloudGaming/OpenNOW-Switch**, `app/src/gfn/authentication.cpp`, MIT. Exact source revision: `upstream-lock.json`; full notice: `licenses/OpenNOW-Switch.txt`. This project does not contain the Qt/Rust desktop client.
 - **ProsperoLight**, BlackBearReloaded, GPL-3.0-or-later: `src/platform/ps5_sockets.c`, `ps5_network_metrics.h`, `console_curl.c`, `console_curl.h`, and the pthread-once compatibility approach. Local adaptations fix no-argument `fcntl` handling, use this application's identity, and integrate the bundled CA file. Revision: `upstream-lock.json`.
 - **cJSON** v1.7.19, Dave Gamble and contributors, MIT. Source: `src/vendor/cJSON.*`; license: `licenses/cJSON.txt`.
+
+## Store brand marks
+
+The store marks in `assets/stores/*.svg` (flattened by `tools/store-marks.py`
+into `src/ui/store_marks.inc`) are copied unchanged from
+**OpenCloudGaming/OpenNOW** `opennow-qt/res/icons/store-*.svg`, revision
+`60ce69a07bf94ba484af7406d386ccb28e5a13e6`. Xbox, GOG.com, EA and NVIDIA come
+from Simple Icons v11.15.0; Steam, Epic Games, Ubisoft and Battle.net from Simple
+Icons v16.35.0; both releases are CC0-1.0 and OpenNOW changed only the fill
+colour. The Gaijin mark comes from gaijin.net; its copyright and trademark remain
+with Gaijin. Every mark only identifies the linked store and implies no
+endorsement; all names and logos remain trademarks of their owners. Details:
+`assets/stores/SOURCES.md`.
 
 ## Television interface fonts and rasterizer (00.002.040)
 

@@ -52,7 +52,16 @@ public:
         available_=true;
     }
 
-    bool get(const char* url,unsigned kind,unsigned char* data,std::size_t capacity,std::size_t& size) noexcept {
+    bool newest(unsigned kind,std::uint64_t below,char* url,std::size_t capacity,std::uint64_t& access) const noexcept {
+        const Header* best=nullptr;
+        for(const auto& entry:entries_)
+            if(entry.length&&entry.kind==kind&&entry.access<below&&(!best||entry.access>best->access))best=&entry;
+        if(!best)return false;
+        std::snprintf(url,capacity,"%s",best->url);access=best->access;
+        return true;
+    }
+
+    bool get(const char* url,unsigned kind,unsigned char* data,std::size_t capacity,std::size_t& size,bool touch=true) noexcept {
         size=0;
         if(!available_)return false;
         for(unsigned i=0;i<slots;++i) {
@@ -66,7 +75,7 @@ public:
                 return false;
             }
             size=header.length;
-            store(i,url,kind,data,size);
+            if(touch)store(i,url,kind,data,size);
             return true;
         }
         return false;
