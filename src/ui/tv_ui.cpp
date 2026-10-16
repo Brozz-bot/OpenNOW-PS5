@@ -9,12 +9,15 @@
 #include <cstring>
 #include <string_view>
 #include "artwork_disk.hpp"
+#include "motion.hpp"
+#include "store_marks.hpp"
 #include <utility>
 
 namespace opennow::ui {
 namespace {
 using ps5::demo::Canvas;
 using ps5::demo::Color;
+using ps5::demo::Clip;
 using std::string_view;
 
 constexpr Color rgb(unsigned hex) {
@@ -73,38 +76,72 @@ void focusFrame(Canvas& c, float x, float y, float w, float h, float radius, uns
 void rule(Canvas& c, float x, float y, float w) {c.roundRect(x,y,w,1,0,face,seamAlpha);}
 void dot(Canvas& c, float cx, float cy, Color color) {c.disc(cx,cy,4.5f,color);}
 
-struct StoreInfo { const char* key; const char* name; Color color; };
-bool contains(string_view haystack, string_view needle) {
-    for(std::size_t i=0;i+needle.size()<=haystack.size();++i) {
-        bool same=true;
-        for(std::size_t j=0;j<needle.size()&&same;++j) {
-            char a=haystack[i+j];if(a>='a'&&a<='z')a=static_cast<char>(a-32);
-            same=a==needle[j];
-        }
-        if(same)return true;
-    }
-    return false;
+enum Anim : std::uint32_t { focusAnim=1, zoomAnim, coverAnim, scrollAnim, ringAnim, pageAnim, sectionAnim, paneAnim,
+    sheetAnim, toggleAnim, segmentAnim, sliderAnim, barAnim, navAnim, backdropAnim, railAnim };
+float follow(const Model& m, std::uint32_t key, float target, float omega, float epsilon=0.05f) {
+    return m.motion?m.motion->follow(key,target,omega,target,epsilon):target;
 }
+float reveal(const Model& m, std::uint32_t key, float omega) {
+    return m.motion?m.motion->follow(key,1,omega,0,0.002f):1;
+}
+float loopPhase(const Model& m, float period) {
+    if(!m.motion||m.streaming)return 0;
+    m.motion->keepAlive();
+    return std::fmod(m.motion->seconds(),period)/period;
+}
+std::uint32_t pageKey(const Model& m) {
+    const Screen page=m.screen==Screen::search?Screen::grid:m.screen;
+    return motionKey(pageAnim,static_cast<std::uint32_t>(page),static_cast<std::uint32_t>(m.section));
+}
+void layer(Canvas& c, float opacity, float dx, float dy) {
+    c.setOpacity(alphaOf(opacity));
+    c.setOffset(dx,dy);
+}
+struct Layer { float opacity, dx, dy; };
+Layer pageLayer(Canvas& c, const Model& m) {
+    const float section=static_cast<float>(m.section);
+    const float travel=follow(m,motionKey(sectionAnim),section,22,0.001f)-section;
+    const float p=reveal(m,pageKey(m),30);
+    const Layer l{std::min(1-0.5f*std::min(std::abs(travel),1.0f),0.65f+0.35f*p),-travel*64,10*(1-p)};
+    layer(c,l.opacity,l.dx,l.dy);
+    return l;
+}
+void focusRing(Canvas& c, const Model& m, unsigned slot, float x, float y, float w, float h, float radius, unsigned halo=115) {
+    const std::uint32_t key=motionKey(focusAnim,pageKey(m),slot);
+    constexpr float omega=36;
+    focusFrame(c,follow(m,key,x,omega),follow(m,key+1,y,omega),follow(m,key+2,w,omega),follow(m,key+3,h,omega),radius,halo);
+}
+
+struct StoreInfo { marks::Store key; const char* name; Color color; };
 StoreInfo storeInfo(string_view store) {
-    if(contains(store,"STEAM"))return {"S","Steam",rgb(0x26364A)};
-    if(contains(store,"EPIC"))return {"E","Epic Games",rgb(0x1B1B1F)};
-    if(contains(store,"UBISOFT")||contains(store,"UPLAY"))return {"U","Ubisoft Connect",rgb(0x3A5BD9)};
-    if(contains(store,"BATTLE"))return {"B","Battle.net",rgb(0x2E7CB8)};
-    if(contains(store,"XBOX"))return {"X","Xbox",rgb(0x107C41)};
-    if(contains(store,"GOG"))return {"G","GOG",rgb(0x7B3FE4)};
-    if(store=="EA"||contains(store,"EA APP")||contains(store,"ORIGIN"))return {"EA","EA app",rgb(0x252A35)};
-    return {nullptr,nullptr,rgb(0x252A35)};
+    using marks::Store;
+    switch(marks::storeKey(store)) {
+    case Store::steam: return {Store::steam,"Steam",rgb(0x26364A)};
+    case Store::epic: return {Store::epic,"Epic Games",rgb(0x1B1B1F)};
+    case Store::ubisoft: return {Store::ubisoft,"Ubisoft Connect",rgb(0x3A5BD9)};
+    case Store::battlenet: return {Store::battlenet,"Battle.net",rgb(0x2E7CB8)};
+    case Store::xbox: return {Store::xbox,store.find("MICROSOFT")!=string_view::npos?"Microsoft Store":"Xbox",rgb(0x107C41)};
+    case Store::gog: return {Store::gog,"GOG",rgb(0x7B3FE4)};
+    case Store::ea: return {Store::ea,"EA app",rgb(0x252A35)};
+    case Store::nvidia: return {Store::nvidia,"NVIDIA",rgb(0x252A35)};
+    case Store::gaijin: return {Store::gaijin,"Gaijin",rgb(0x252A35)};
+    case Store::none: break;
+    }
+    return {Store::none,nullptr,rgb(0x252A35)};
 }
 const char* storeName(const char* store) {const auto info=storeInfo(store);return info.name?info.name:store;}
 void storeMark(Canvas& c, float cx, float cy, float size, string_view store) {
     const auto info=storeInfo(store);
     c.disc(cx,cy,size/2,info.color);
     c.ring(cx,cy,size/2-0.5f,1,face,46);
-    char letter[3]{};
-    if(info.key)std::snprintf(letter,sizeof(letter),"%s",info.key);
-    else if(!store.empty())letter[0]=static_cast<char>(store[0]>='a'&&store[0]<='z'?store[0]-32:store[0]);
-    const float s=std::round(size*(letter[1]?0.36f:0.42f));
-    labelCenter(c,Face::black,s,cx,cy,letter,face);
+    const unsigned side=static_cast<unsigned>(std::lround(size*0.56f));
+    if(const auto* mask=marks::mask(info.key,side)) {
+        c.coverage(static_cast<int>(std::lround(cx-side/2.0f)),static_cast<int>(std::lround(cy-side/2.0f)),side,side,mask->pixels,side,rgb(0xE8F2EA));
+        return;
+    }
+    char letter[2]{};
+    if(!store.empty())letter[0]=static_cast<char>(store[0]>='a'&&store[0]<='z'?store[0]-32:store[0]);
+    labelCenter(c,Face::black,std::round(size*0.42f),cx,cy,letter,face);
 }
 float storeChipWidth(const char* store, float markSize=30, float inset=5) {return inset+markSize+10+textWidth(Face::extrabold,16,storeName(store))+16;}
 float storeChip(Canvas& c, float x, float cy, const char* store, float markSize=30, float inset=5) {
@@ -207,7 +244,8 @@ void navIcon(Canvas& c, NavIcon icon, float cx, float cy, bool onLight) {
     }
     }
 }
-void navPill(Canvas& c, Section section) {
+void navPill(Canvas& c, const Model& m) {
+    const Section section=m.section;
     struct Destination { NavIcon icon; const char* name; Section section; };
     constexpr Destination items[]={{NavIcon::library,"Library",Section::library},{NavIcon::store,"Store",Section::browse},{NavIcon::settings,"Settings",Section::settings}};
     float row=glyphWidth(Glyph::l1)+8+8+glyphWidth(Glyph::r1)+4*4;
@@ -216,11 +254,15 @@ void navPill(Canvas& c, Section section) {
     panel(c,x,y,w,72,36,true);
     float at=x+15;
     at+=glyph(c,Glyph::l1,at,cy)+4+8;
+    for(float slot=at;const auto& item:items) {
+        const float iw=item.section==section?30+10+textWidth(Face::black,17,item.name)+34:64;
+        if(item.section==section)c.roundRect(follow(m,motionKey(navAnim),slot,30),cy-26,follow(m,motionKey(navAnim,1),iw,30),52,26,face);
+        slot+=iw+4;
+    }
     for(const auto& item:items) {
         const bool current=item.section==section;
         const float iw=current?30+10+textWidth(Face::black,17,item.name)+34:64;
         if(current) {
-            c.roundRect(at,cy-26,iw,52,26,face);
             navIcon(c,item.icon,at+14+15,cy,true);
             label(c,Face::black,17,at+14+30+10,cy,item.name,faceText);
         } else navIcon(c,item.icon,at+32,cy,false);
@@ -231,6 +273,7 @@ void navPill(Canvas& c, Section section) {
 }
 
 void chrome(Canvas& c, const Model& m, string_view title, bool nav, const Hint* left, unsigned leftCount, const Hint* right, unsigned rightCount, bool bottom=true) {
+    layer(c,1,0,0);
     const bool signedIn=m.login.state==State::authenticated;
     const char* name=signedIn?"NVIDIA account":"Guest";
     const char* tag=signedIn?nullptr:"SIGNED OUT";
@@ -265,7 +308,7 @@ void chrome(Canvas& c, const Model& m, string_view title, bool nav, const Hint* 
         fitted(c,Face::black,22,gap+(sx-gap-tw)/2,66,title,room,face,0.01f);
     }
     if(!bottom)return;
-    if(nav)navPill(c,m.section);
+    if(nav)navPill(c,m);
     hintRow(c,left,leftCount,64);
     hintRow(c,right,rightCount,1856-hintRowWidth(right,rightCount));
 }
@@ -297,97 +340,129 @@ void screenBase(Canvas& c, Color tint) {
         c.rectangle(0,row,1920,1,color);
     }
 }
-std::uint8_t opaqueRows[1080];
-void fullRows() {if(!opaqueRows[0])std::memset(opaqueRows,255,sizeof(opaqueRows));}
 bool wantHero(const Model& m, const Game* game) {
     return game&&m.art&&*game->hero&&m.art->want(game->hero,art::Kind::hero,m.frame)==art::State::ready;
 }
-void screenBackground(Canvas& c, const Model& m, const Game* game, Color tint) {
-    screenBase(c,tint);
-    if(!wantHero(m,game))return;
-    static std::uint8_t columns[1920];
-    static bool ready=false;
-    if(!ready) {
-        for(int i=0;i<1920;++i) {
-            const float t=static_cast<float>(i)/1919.0f;
-            const float scrim=t<0.48f?lerp(1.0f,0.60f,t/0.48f):lerp(0.60f,0.88f,(t-0.48f)/0.52f);
-            columns[i]=static_cast<std::uint8_t>(alphaOf(0.58f*0.88f*(1-scrim)));
-        }
-        fullRows();ready=true;
+enum class Backdrop : std::uint32_t { screen, detail, stage };
+constexpr unsigned backdropWidth=art::heroWidth, backdropHeight=art::heroHeight;
+struct BackdropFrame { std::uint32_t key=0; std::uint32_t pixels[backdropWidth*backdropHeight]; };
+BackdropFrame backdrops[2];
+unsigned shownBackdrop=0;
+unsigned backdropColumn(Backdrop style, int x) {
+    const float fx=static_cast<float>(x);
+    switch(style) {
+    case Backdrop::screen: {
+        const float t=fx/1919.0f;
+        const float scrim=t<0.48f?lerp(1.0f,0.60f,t/0.48f):lerp(0.60f,0.88f,(t-0.48f)/0.52f);
+        return alphaOf(0.58f*0.88f*(1-scrim));
     }
-    m.art->drawHero(c,game->hero,0,0,1920,1080,columns,opaqueRows);
-}
-void detailBackground(Canvas& c, const Model& m, const Game* game) {
-    c.clear(shell);
-    if(!wantHero(m,game))return;
-    static std::uint8_t columns[1920], rows[1080];
-    static bool ready=false;
-    constexpr int origin=326, heroX=653, heroW=1267;
-    if(!ready) {
-        for(int i=0;i<1920;++i) {
-            const int x=origin+i;
-            if(x<heroX){columns[i]=0;continue;}
-            const float t=static_cast<float>(x-heroX)/heroW;
-            const float scrim=t<0.32f?lerp(1.0f,0.55f,t/0.32f):t<0.6f?lerp(0.55f,0.0f,(t-0.32f)/0.28f):0.0f;
-            columns[i]=static_cast<std::uint8_t>(alphaOf(1-scrim));
-        }
-        for(int y=0;y<1080;++y)rows[y]=static_cast<std::uint8_t>(alphaOf(y<800?1.0f:1-0.9f*(y-800)/280.0f));
-        ready=true;
+    case Backdrop::detail: {
+        if(x<653)return 0;
+        const float t=(fx-653)/1267;
+        const float scrim=t<0.32f?lerp(1.0f,0.55f,t/0.32f):t<0.6f?lerp(0.55f,0.0f,(t-0.32f)/0.28f):0.0f;
+        return alphaOf(1-scrim);
     }
-    m.art->drawHero(c,game->hero,origin,0,1920,1080,columns,rows);
-}
-void stageBackground(Canvas& c, const Model& m, const Game* game) {
-    c.clear(shell);
-    if(!wantHero(m,game))return;
-    static std::uint8_t columns[1920], rows[1080];
-    static bool ready=false;
-    constexpr int origin=288, heroX=576;
-    if(!ready) {
-        for(int i=0;i<1920;++i) {
-            const int x=origin+i;
-            const float t=static_cast<float>(x)/1920.0f;
-            const float scrim=t<0.34f?1.0f:t<0.62f?lerp(1.0f,0.66f,(t-0.34f)/0.28f):lerp(0.66f,0.34f,(t-0.62f)/0.38f);
-            columns[i]=x<heroX||x>=1920?0:static_cast<std::uint8_t>(alphaOf(0.62f*(1-scrim)));
-        }
-        for(int y=0;y<1080;++y)rows[y]=static_cast<std::uint8_t>(alphaOf(y<756?1.0f:1-(y-756)/324.0f));
-        ready=true;
+    case Backdrop::stage: {
+        if(x<576)return 0;
+        const float t=fx/1920.0f;
+        const float scrim=t<0.34f?1.0f:t<0.62f?lerp(1.0f,0.66f,(t-0.34f)/0.28f):lerp(0.66f,0.34f,(t-0.62f)/0.38f);
+        return alphaOf(0.62f*(1-scrim));
     }
-    m.art->drawHero(c,game->hero,origin,0,1920,1080,columns,rows);
+    }
+    return 0;
 }
+float backdropRow(Backdrop style, int y) {
+    const float fy=static_cast<float>(y);
+    return style==Backdrop::detail?(y<800?1.0f:1-0.9f*(fy-800)/280.0f):style==Backdrop::stage?(y<756?1.0f:1-(fy-756)/324.0f):1.0f;
+}
+void buildBackdrop(BackdropFrame& frame, Backdrop style, Color tint, const Model& m, const char* hero) {
+    static std::uint8_t columns[3][backdropWidth], rows[3][backdropHeight];
+    static bool tables=false;
+    if(!tables) {
+        for(unsigned s=0;s<3;++s) {
+            for(unsigned x=0;x<backdropWidth;++x)columns[s][x]=static_cast<std::uint8_t>(backdropColumn(static_cast<Backdrop>(s),static_cast<int>(x*2)));
+            for(unsigned y=0;y<backdropHeight;++y)rows[s][y]=static_cast<std::uint8_t>(alphaOf(backdropRow(static_cast<Backdrop>(s),static_cast<int>(y*2))));
+        }
+        tables=true;
+    }
+    const unsigned styleIndex=static_cast<unsigned>(style);
+    const Color base=style==Backdrop::screen?mix(shell,tint,0.12f):shell;
+    const bool art=hero&&m.art->copy(hero,art::Kind::hero,frame.pixels);
+    const int origin=style==Backdrop::detail?326:style==Backdrop::stage?288:0;
+    static std::uint32_t source[backdropWidth];
+    for(unsigned y=0;y<backdropHeight;++y) {
+        const int row=static_cast<int>(y*2);
+        const auto under=static_cast<std::uint32_t>(style==Backdrop::screen&&row<432?mix(base,accent,0.07f*(1-row/432.0f)):base);
+        std::uint32_t* out=frame.pixels+std::size_t(y)*backdropWidth;
+        if(art)std::memcpy(source,out,sizeof(source));
+        for(unsigned x=0;x<backdropWidth;++x) {
+            const int column=static_cast<int>(x*2), sourceX=(column-origin)/2;
+            const unsigned a=art&&column>=origin?(columns[styleIndex][x]*rows[styleIndex][y]+127U)/255U:0;
+            if(!a){out[x]=under;continue;}
+            const std::uint32_t over=source[sourceX];
+            std::uint32_t mixed=0xff000000U;
+            for(unsigned shift:{0U,8U,16U})
+                mixed|=((((over>>shift)&255U)*a+((under>>shift)&255U)*(255-a)+127)/255)<<shift;
+            out[x]=mixed;
+        }
+    }
+}
+void backdrop(Canvas& c, const Model& m, Backdrop style, const Game* game, Color tint) {
+    const char* hero=wantHero(m,game)?game->hero:nullptr;
+    std::uint32_t name=2166136261U;
+    for(const char* p=hero?hero:"";*p;++p)name=(name^static_cast<unsigned char>(*p))*16777619U;
+    const std::uint32_t key=motionKey(backdropAnim+static_cast<std::uint32_t>(style),static_cast<std::uint32_t>(tint),name)|1U;
+    if(backdrops[shownBackdrop].key!=key) {
+        shownBackdrop^=1;
+        if(backdrops[shownBackdrop].key!=key) {
+            buildBackdrop(backdrops[shownBackdrop],style,tint,m,hero);
+            backdrops[shownBackdrop].key=key;
+        }
+    }
+    const auto& previous=backdrops[shownBackdrop^1];
+    const float p=previous.key?reveal(m,key,14):1;
+    c.imageDoubled(backdrops[shownBackdrop].pixels,backdropWidth,backdropHeight,alphaOf(p),p<1?previous.pixels:nullptr);
+}
+void screenBackground(Canvas& c, const Model& m, const Game* game, Color tint) {backdrop(c,m,Backdrop::screen,game,tint);}
+void detailBackground(Canvas& c, const Model& m, const Game* game) {backdrop(c,m,Backdrop::detail,game,shell);}
+void stageBackground(Canvas& c, const Model& m, const Game* game) {backdrop(c,m,Backdrop::stage,game,shell);}
 
 constexpr float posterW=art::tileWidth, posterH=art::tileHeight, posterRadius=22;
-void bottomScrim(Canvas& c, float x, float y, float w, float h, float radius, float start) {
-    const int from=static_cast<int>(h*start), to=static_cast<int>(h);
-    for(int row=from;row<to;++row) {
-        const float t=static_cast<float>(row-from)/static_cast<float>(to-from);
-        const float dy=static_cast<float>(row)+0.5f-(h-radius);
-        const float inset=dy>0?radius-std::sqrt(std::max(0.0f,radius*radius-dy*dy)):0;
-        c.roundRect(x+inset,y+row,w-2*inset,1,0,black,alphaOf(0.82f*t));
+void shimmer(Canvas& c, const Model& m, float x, float y, float w, float h, float radius) {
+    const float t=loopPhase(m,1.4f);
+    if(!m.motion||m.streaming)return;
+    const Clip saved=c.clip();
+    const float band=w*0.55f, center=x-band+(w+2*band)*t;
+    for(int i=-2;i<=2;++i) {
+        c.setClip(saved);
+        c.setClip(center+i*band/5-band/10,y,band/5,h);
+        c.roundRect(x,y,w,h,radius,face,static_cast<unsigned>(14-4*std::abs(i)));
     }
+    c.setClip(saved);
 }
-void poster(Canvas& c, const Model& m, const Game& game, float x, float y, bool focused, float visible=posterH) {
-    const bool full=visible>=posterH;
+void poster(Canvas& c, const Model& m, const Game& game, unsigned index, float x, float y, bool focused) {
     art::State state=art::State::missing;
     if(m.art&&*game.art)state=m.art->want(game.art,art::Kind::tile,m.frame);
-    const bool drawn=state==art::State::ready&&m.art->draw(c,game.art,art::Kind::tile,x,y,posterRadius,255,static_cast<unsigned>(visible));
-    if(!drawn)c.roundRect(x,y,posterW,visible,posterRadius,storeInfo(game.store).color);
-    if(full) {
-        bottomScrim(c,x,y,posterW,posterH,posterRadius,0.6f);
-        if(!drawn) {
-            const unsigned lines=drawWrapped(c,Face::black,15,0,0,19,game.title,posterW-24,3,face,255,false);
-            drawWrapped(c,Face::black,15,x+12,y+posterH-8-32-8-lines*19.0f,19,game.title,posterW-24,3,face);
-            if(state==art::State::loading)for(int i=0;i<3;++i)c.disc(x+20+i*14.0f,y+22,4,face,i==0?220:90);
-        }
-        c.roundRect(x+8,y+posterH-8-32,32,32,16,black,140);
-        storeMark(c,x+8+16,y+posterH-8-16,24,game.store);
+    const bool ready=state==art::State::ready;
+    const std::uint32_t section=static_cast<std::uint32_t>(m.section);
+    const float zoom=follow(m,motionKey(zoomAnim,section,index),focused?1.04f:1.0f,46,0.0005f);
+    const float shown=follow(m,motionKey(coverAnim,section,index),ready?1.0f:0.0f,14,0.004f);
+    const float w=posterW*zoom, h=posterH*zoom, px=x-(w-posterW)/2, py=y-(h-posterH)/2, radius=posterRadius*zoom;
+    if(shown<1) {
+        c.roundRect(px,py,w,h,radius,storeInfo(game.store).color);
+        if(state==art::State::loading)shimmer(c,m,px,py,w,h,radius);
+        const unsigned lines=drawWrapped(c,Face::black,15,0,0,19,game.title,posterW-24,3,face,255,false);
+        drawWrapped(c,Face::black,15,px+12,py+h-8-32-8-lines*19.0f,19,game.title,posterW-24,3,face,alphaOf(1-shown));
     }
-    if(focused)focusFrame(c,x,y,posterW,visible,posterRadius);
-    else c.roundRectStroke(x,y,posterW,visible,posterRadius,1,face,seamAlpha);
+    if(shown>0)m.art->draw(c,game.art,art::Kind::tile,px,py,w,h,radius,alphaOf(shown));
+    c.scrim(px,py,w,h,radius,0.6f,black,alphaOf(0.82f));
+    c.roundRect(px+8,py+h-8-32,32,32,16,black,140);
+    storeMark(c,px+8+16,py+h-8-16,24,game.store);
+    if(!focused)c.roundRectStroke(px,py,w,h,radius,1,face,seamAlpha);
 }
-void pageTile(Canvas& c, float x, float y, bool loading, float visible=posterH) {
-    c.roundRect(x,y,posterW,visible,posterRadius,face,5);
-    c.roundRectStroke(x,y,posterW,visible,posterRadius,2,face,97);
-    if(visible<posterH)return;
+void pageTile(Canvas& c, float x, float y, bool loading) {
+    c.roundRect(x,y,posterW,posterH,posterRadius,face,5);
+    c.roundRectStroke(x,y,posterW,posterH,posterRadius,2,face,97);
     const float cx=x+posterW/2, cy=y+posterH/2-14;
     if(loading){for(int i=0;i<3;++i)c.disc(cx-14+i*14.0f,cy,4,face,i==0?255:90);}
     else {c.roundRect(cx-10,cy-1.5f,20,3,1.5f,face);c.roundRect(cx-1.5f,cy-10,3,20,1.5f,face);}
@@ -397,19 +472,35 @@ struct GridLayout { float x, y, stepX, stepY, clip; unsigned columns; };
 void posterGrid(Canvas& c, const Model& m, const CloudView& v, unsigned focus, const GridLayout& g) {
     const unsigned focusRow=focus/g.columns, top=focusRow>0?focusRow-1:0;
     const bool pageTileShown=v.hasNext||v.state==CloudState::loading;
-    const unsigned slots=v.count+(pageTileShown?1:0);
-    for(unsigned row=top;row*g.columns<slots;++row) {
-        const float y=g.y+(row-top)*g.stepY;
-        const float visible=std::min(posterH,g.clip-y);
-        if(visible<24)break;
+    const unsigned slots=v.count+(pageTileShown?1:0), rows=(slots+g.columns-1)/g.columns;
+    const std::uint32_t section=static_cast<std::uint32_t>(m.section);
+    constexpr float rowOmega=22;
+    const float scroll=follow(m,motionKey(scrollAnim,section),static_cast<float>(top),rowOmega,0.002f);
+    const float ringRow=follow(m,motionKey(ringAnim,section),static_cast<float>(focusRow),rowOmega,0.002f);
+    const float ringColumn=follow(m,motionKey(ringAnim,section,1),static_cast<float>(focus%g.columns),36,0.002f);
+    const float clipTop=g.y-24;
+    const Clip saved=c.clip();
+    c.setClip(0,clipTop,1920,g.clip-clipTop);
+    bool below=false;
+    for(unsigned row=static_cast<unsigned>(std::max(0.0f,std::floor(scroll)-1));row<rows&&!below;++row) {
+        const float y=std::round(g.y+(static_cast<float>(row)-scroll)*g.stepY);
+        below=y>=g.clip;
+        const bool visible=!below&&y+posterH>clipTop;
         for(unsigned col=0;col<g.columns;++col) {
             const unsigned index=row*g.columns+col;
             if(index>=slots)break;
             const float x=g.x+col*g.stepX;
-            if(index<v.count)poster(c,m,v.games[index],x,y,index==focus,visible);
-            else pageTile(c,x,y,v.state==CloudState::loading,visible);
+            if(!visible) {
+                if(index<v.count&&m.art&&*v.games[index].art)m.art->want(v.games[index].art,art::Kind::tile,m.frame,true);
+            } else if(index<v.count)poster(c,m,v.games[index],index,x,y,index==focus);
+            else pageTile(c,x,y,v.state==CloudState::loading);
         }
     }
+    if(focus<v.count) {
+        const float w=posterW*1.04f, h=posterH*1.04f;
+        focusFrame(c,g.x+ringColumn*g.stepX-(w-posterW)/2,g.y+(ringRow-scroll)*g.stepY-(h-posterH)/2,w,h,posterRadius*1.04f);
+    }
+    c.setClip(saved);
 }
 
 void searchField(Canvas& c, float x, float y, float w, string_view text, bool query) {
@@ -523,6 +614,7 @@ void libraryScreen(Canvas& c, const Model& m) {
     const bool hasGames=m.screen==Screen::grid&&v.count;
     const unsigned focus=hasGames?std::min(m.focus,v.count-1):0;
     screenBackground(c,m,hasGames?&v.games[focus]:nullptr,rgb(0x354016));
+    pageLayer(c,m);
     char text[160],body[256];
     const Message msg=hasGames?Message{}:catalogMessage(m,body,sizeof(body));
     searchField(c,96,126,440,storeCatalogText(m,text,sizeof(text)),false);
@@ -571,6 +663,7 @@ void storeScreen(Canvas& c, const Model& m, bool hints=true) {
     const bool hasGames=(m.screen==Screen::grid||m.screen==Screen::search)&&v.count;
     const unsigned focus=hasGames?std::min(m.focus,v.count-1):0;
     screenBackground(c,m,hasGames?&v.games[focus]:nullptr,rgb(0x18230F));
+    pageLayer(c,m);
     eyebrow(c,96,130,*m.searchText?"Search results":"GeForce NOW catalog");
     char text[160],body[256];
     const Message msg=hasGames?Message{}:catalogMessage(m,body,sizeof(body));
@@ -632,6 +725,7 @@ void detail(Canvas& c, const Model& m) {
     const unsigned focus=std::min(m.focus,cv.count-1);
     const Game& game=cv.games[focus];
     detailBackground(c,m,&game);
+    pageLayer(c,m);
     char text[256];
     std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s",storeName(game.store),m.section==Section::library?"In your library":"From the catalog");
     eyebrow(c,120,209,text,muted,15,860);
@@ -665,7 +759,7 @@ void detail(Canvas& c, const Model& m) {
     Button play{Glyph::cross,text,true};
     const float pw=buttonWidth(play,24,34)+12;
     actionButton(c,play,120,actionsY,72,pw,24,34);
-    focusFrame(c,120,actionsY,pw,72,36,140);
+    focusRing(c,m,0,120,actionsY,pw,72,36,140);
     if(m.detailAction)actionButton(c,{Glyph::triangle,m.detailAction},120+pw+14,actionsY,72,0,20,30);
     const float cardX=1352, cardY=470, cardW=472, ix=cardX+29, iw=cardW-58;
     const unsigned available=m.choiceCount, selected=std::min(m.choice,available?available-1:0);
@@ -701,12 +795,16 @@ void detail(Canvas& c, const Model& m) {
     chrome(c,m,"",false,left,2,m.detailAction?right:right+1,m.detailAction?2:1,m.tile.stage==HomeTile::Stage::hidden);
 }
 
-void rowFrame(Canvas& c, float x, float y, float w, float h, bool focused) {
-    if(focused) {
-        c.roundRect(x,y,w,h,24,face,26);
-        c.roundRectStroke(x-5,y-5,w+10,h+10,29,5,accent,102);
-        c.roundRectStroke(x,y,w,h,24,3,face);
-    } else c.roundRect(x+18,y+h-1,w-36,1,0,face,23);
+void rowFrame(Canvas& c, const Model& m, float x, float y, float w, float h, bool focused) {
+    if(!focused) {
+        c.roundRect(x+18,y+h-1,w-36,1,0,face,23);
+        return;
+    }
+    const std::uint32_t key=motionKey(focusAnim,pageKey(m),static_cast<std::uint32_t>(m.pane)+8);
+    const float fy=follow(m,key,y,36), fh=follow(m,key+1,h,36);
+    c.roundRect(x,fy,w,fh,24,face,26);
+    c.roundRectStroke(x-5,fy-5,w+10,fh+10,29,5,accent,102);
+    c.roundRectStroke(x,fy,w,fh,24,3,face);
 }
 void rowText(Canvas& c, float x, float y, float h, string_view title, string_view description, Color descColor=muted, bool dirty=false, Color titleColor=face, float maxWidth=700) {
     const bool desc=!description.empty();
@@ -717,25 +815,39 @@ void rowText(Canvas& c, float x, float y, float h, string_view title, string_vie
 }
 struct Option { const char* text; bool on, disabled; };
 void unavailableIcon(Canvas& c, float cx, float cy, Color color) {c.ring(cx,cy,7,2.2f,color);c.line(cx-5,cy+5,cx+5,cy-5,2.2f,color);}
-float segments(Canvas& c, float rightX, float cy, const Option* options, unsigned count) {
-    float widths[4],total=6*(count-1.0f);
+float segments(Canvas& c, const Model& m, unsigned id, float rightX, float cy, const Option* options, unsigned count) {
+    float widths[4],starts[4],total=6*(count-1.0f);
     for(unsigned i=0;i<count;++i){widths[i]=36+textWidth(Face::black,16,options[i].text)+(options[i].disabled?22:0);total+=widths[i];}
     float x=rightX-total;
+    int on=-1;
+    for(unsigned i=0;i<count;++i) {
+        starts[i]=x;
+        if(options[i].on)on=static_cast<int>(i);
+        c.roundRectStroke(x,cy-22,widths[i],44,22,1,face,46);
+        x+=widths[i]+6;
+    }
+    float pill=0,pillW=0;
+    if(on>=0) {
+        const std::uint32_t key=motionKey(segmentAnim,id);
+        pill=follow(m,key,starts[on],34);pillW=follow(m,key+1,widths[on],34);
+        c.roundRect(pill,cy-22,pillW,44,22,face);
+    }
     for(unsigned i=0;i<count;++i) {
         const auto& o=options[i];
-        if(o.on)c.roundRect(x,cy-22,widths[i],44,22,face);
-        else c.roundRectStroke(x,cy-22,widths[i],44,22,1,face,46);
-        float tx=x+18;
-        if(o.disabled){unavailableIcon(c,tx+7,cy,o.on?faceText:dim);tx+=22;}
-        label(c,Face::black,16,tx,cy,o.text,o.on?faceText:o.disabled?dim:face);
-        x+=widths[i]+6;
+        const float overlap=std::clamp((std::min(pill+pillW,starts[i]+widths[i])-std::max(pill,starts[i]))/widths[i],0.0f,1.0f);
+        const Color ink=mix(o.disabled?dim:face,faceText,overlap);
+        float tx=starts[i]+18;
+        if(o.disabled){unavailableIcon(c,tx+7,cy,ink);tx+=22;}
+        label(c,Face::black,16,tx,cy,o.text,ink);
     }
     return total;
 }
-void toggle(Canvas& c, float rightX, float cy, bool on) {
+void toggle(Canvas& c, const Model& m, unsigned id, float rightX, float cy, bool on) {
+    const float t=follow(m,motionKey(toggleAnim,id),on?1.0f:0.0f,34,0.002f);
     const float x=rightX-64;
-    c.roundRect(x,cy-18,64,36,18,on?mint:face,on?255:46);
-    c.disc(x+(on?32:4)+14,cy,14,face);
+    c.roundRect(x,cy-18,64,36,18,face,46);
+    if(t>0)c.roundRect(x,cy-18,64,36,18,mint,alphaOf(t));
+    c.disc(x+4+28*t+14,cy,14,face);
 }
 void chevron(Canvas& c, float cx, float cy, int direction, Color color) {
     const float d=4.5f*static_cast<float>(direction);
@@ -836,7 +948,7 @@ void streamPane(Canvas& c, const Model& m) {
         const auto row=static_cast<StreamRow>(i);
         const float h=80, y=rowsTop+i*(h+4), cy=y+h/2, rx=rowsX+rowsW-22;
         const bool focused=m.settingsContent&&m.settingsRow==i;
-        rowFrame(c,rowsX,y,rowsW,h,focused);
+        rowFrame(c,m,rowsX,y,rowsW,h,focused);
         const char* head="";const char* sub="";Color subColor=muted;
         switch(row) {
         case StreamRow::preset: {
@@ -853,7 +965,7 @@ void streamPane(Canvas& c, const Model& m) {
             sub=!anyHardware?"Hardware decoding isn\xE2\x80\x99t qualified on this PS5":d.hardware()?"PS5 video decoder":"CPU decoding, H.264 only";
             if(!anyHardware)subColor=yellow;
             const Option o[]={{"Hardware accelerated",d.hardware(),!anyHardware},{"Software",!d.hardware(),false}};
-            segments(c,rx,cy,o,2);
+            segments(c,m,0,rx,cy,o,2);
             break;
         }
         case StreamRow::codec: {
@@ -862,7 +974,7 @@ void streamPane(Canvas& c, const Model& m) {
             sub=!d.hardware()?"Software decodes H.264 only":!hevc?"HEVC isn\xE2\x80\x99t qualified on this PS5":"AV1 is unavailable in this port";
             if(!d.hardware()||!hevc)subColor=yellow;
             const Option o[]={{"H.264",!d.tenBit(),d.hardware()&&!m.caps.h264Hardware},{"HEVC",d.tenBit(),!d.hardware()||!hevc},{"AV1",false,true}};
-            segments(c,rx,cy,o,3);
+            segments(c,m,1,rx,cy,o,3);
             break;
         }
         case StreamRow::resolution:
@@ -892,7 +1004,7 @@ void streamPane(Canvas& c, const Model& m) {
             sub=!d.tenBit()?"Needs HEVC and hardware decoding":!m.caps.hevcHdr?"HDR isn\xE2\x80\x99t qualified on this PS5":"HEVC Main10 with HDR10";
             if(d.tenBit()&&!m.caps.hevcHdr)subColor=yellow;
             const Option o[]={{"Off",!d.hdr(),d.tenBit()&&!m.caps.hevcSdr},{"On",d.hdr(),!d.tenBit()||!m.caps.hevcHdr}};
-            segments(c,rx,cy,o,2);
+            segments(c,m,2,rx,cy,o,2);
             break;
         }
         case StreamRow::reset:
@@ -908,7 +1020,7 @@ void streamPane(Canvas& c, const Model& m) {
 void displayPane(Canvas& c, const Model& m) {
     float y=rowsTop;
     const auto info=[&](const char* title,const char* desc,string_view value,float h=84){
-        rowFrame(c,rowsX,y,rowsW,h,false);
+        rowFrame(c,m,rowsX,y,rowsW,h,false);
         rowText(c,rowsX,y,h,title,desc,muted,false,face,560);
         infoValue(c,rowsX+rowsW-22,y+h/2,value,face,600);
         y+=h+4;
@@ -921,7 +1033,7 @@ void displayPane(Canvas& c, const Model& m) {
     info("Audio channels","Surround is turned off for now","Stereo");
     const auto& a=m.audio;
     const float h=150;
-    rowFrame(c,rowsX,y,rowsW,h,false);
+    rowFrame(c,m,rowsX,y,rowsW,h,false);
     const float ix=rowsX+22;
     label(c,Face::black,21,ix,y+30,"Last session audio",face);
     if(!a.requested) {
@@ -951,7 +1063,7 @@ void cachePane(Canvas& c, const Model& m) {
     char big[32],line[160];
     float y=rowsTop;
     const float usageH=120;
-    rowFrame(c,rowsX,y,rowsW,usageH,false);
+    rowFrame(c,m,rowsX,y,rowsW,usageH,false);
     const char* state=d.error?"Cover art storage reported an error on this PS5":d.busy?"Updating\xE2\x80\xA6":!d.enabled?"Saving is off":"oldest removed first when full";
     if(known)std::snprintf(line,sizeof(line),"%zu of %u images \xC2\xB7 %s",d.count,art::DiskCache::slots,state);
     else std::snprintf(line,sizeof(line),"%s \xC2\xB7 saved covers aren\xE2\x80\x99t counted until saving is on",state);
@@ -964,14 +1076,15 @@ void cachePane(Canvas& c, const Model& m) {
     labelRight(c,Face::black,28,rx-lw-10,y+44,big,known?face:muted);
     const float fill=std::min(1.0f,float(double(d.bytes)/double(art::DiskCache::budgetBytes)));
     c.roundRect(rx-320,y+76,320,10,5,face,41);
-    if(known&&fill>0)c.roundRect(rx-320,y+76,std::max(10.0f,320*fill),10,5,accent);
+    const float shownFill=follow(m,motionKey(barAnim,1),known?fill:0,18,0.0005f);
+    if(shownFill>0)c.roundRect(rx-320,y+76,std::max(10.0f,320*shownFill),10,5,accent);
     y+=usageH+4;
     const bool toggleFocus=m.settingsContent&&m.settingsRow==0, clearFocus=m.settingsContent&&m.settingsRow==1;
-    rowFrame(c,rowsX,y,rowsW,84,toggleFocus);
+    rowFrame(c,m,rowsX,y,rowsW,84,toggleFocus);
     rowText(c,rowsX,y,84,"Save cover art on this PS5","Off keeps covers in memory only. They download again each launch.");
-    toggle(c,rx,y+42,m.artworkWanted);
+    toggle(c,m,0,rx,y+42,m.artworkWanted);
     y+=88;
-    rowFrame(c,rowsX,y,rowsW,84,clearFocus);
+    rowFrame(c,m,rowsX,y,rowsW,84,clearFocus);
     const bool canClear=m.art&&!d.busy&&(!known||d.count>0);
     rowText(c,rowsX,y,84,"Clear cover art cache",canClear?(known?"Removes saved images only. You stay signed in and keep your settings.":"Removes any saved images, even while saving is off. You stay signed in."):
         d.busy?"Busy right now. Try again in a moment.":"Nothing saved to clear.");
@@ -983,7 +1096,7 @@ void cachePane(Canvas& c, const Model& m) {
 void accountPane(Canvas& c, const Model& m) {
     float y=rowsTop;
     const float cardH=120;
-    rowFrame(c,rowsX,y,rowsW,cardH,false);
+    rowFrame(c,m,rowsX,y,rowsW,cardH,false);
     const float ax=rowsX+22+38, cy=y+cardH/2;
     c.disc(ax,cy,38,violet);c.ring(ax,cy,37,3,face);
     labelCenter(c,Face::black,32,ax,cy,"N",faceText);
@@ -997,25 +1110,25 @@ void accountPane(Canvas& c, const Model& m) {
     label(c,Face::semibold,14,tx,cy+30,m.login.sessionSaved?"Login saved on this PS5 and restored when OpenNOW starts.":"Signed in for now \xC2\xB7 the login couldn\xE2\x80\x99t be saved on this PS5.",m.login.sessionSaved?muted:yellow);
     y+=cardH+4;
     const bool focused=m.settingsContent;
-    rowFrame(c,rowsX,y,rowsW,84,focused);
+    rowFrame(c,m,rowsX,y,rowsW,84,focused);
     rowText(c,rowsX,y,84,"Sign out","Removes the saved login. Signing in again needs a new code.");
     valuePill(c,rowsX+rowsW-22,y+42,"Sign out of NVIDIA",true);
     y+=88;
-    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowFrame(c,m,rowsX,y,rowsW,84,false);
     rowText(c,rowsX,y,84,"Your password stays with NVIDIA","OpenNOW never asks for it. Sign-in happens on NVIDIA\xE2\x80\x99s site with a one-time code from this PS5.",muted,false,face,1200);
 }
-void aboutPane(Canvas& c) {
+void aboutPane(Canvas& c, const Model& m) {
     float y=rowsTop;
-    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowFrame(c,m,rowsX,y,rowsW,84,false);
     rowText(c,rowsX,y,84,"Version","OpenNOW for PS5 \xC2\xB7 alpha build");
     infoValue(c,rowsX+rowsW-22,y+42,OPENNOW_VERSION,face);
     y+=88;
     const float h=136;
-    rowFrame(c,rowsX,y,rowsW,h,false);
+    rowFrame(c,m,rowsX,y,rowsW,h,false);
     label(c,Face::black,21,rowsX+22,y+32,"Credits & licenses",face);
     drawWrapped(c,Face::semibold,16,rowsX+22,y+52,24,"Built on OpenNOW and OpenNOW-Switch by Open Cloud Gaming. Fonts: Nunito and IBM Plex Mono (SIL OFL 1.1). stb_truetype and stb_image (public domain / MIT). Full notices ship with the app in THIRD_PARTY_NOTICES.",rowsW-44,3,muted);
     y+=h+4;
-    rowFrame(c,rowsX,y,rowsW,84,false);
+    rowFrame(c,m,rowsX,y,rowsW,84,false);
     rowText(c,rowsX,y,84,"Unofficial client","Not affiliated with NVIDIA or Sony. GeForce NOW is a trademark of NVIDIA.");
 }
 
@@ -1050,23 +1163,22 @@ const char* paneName(SettingsPane pane) {
 bool settingsDialog(const Model& m) {return m.edit.open()||m.confirmClear||m.confirmFixed||m.confirmSignOut;}
 void settingsSidebar(Canvas& c, const Model& m) {
     panel(c,96,124,360,792,40);
+    const float activeY=follow(m,motionKey(paneAnim,1),168+static_cast<float>(m.pane)*58.0f,36);
+    c.roundRect(119,activeY-27,314,54,27,face);
+    if(!m.settingsContent&&!settingsDialog(m))focusFrame(c,119,activeY-27,314,54,27);
     for(unsigned i=0;i<settingsPanes;++i) {
         const auto pane=static_cast<SettingsPane>(i);
         const float cy=168+i*58.0f;
-        const bool active=pane==m.pane;
-        if(active) {
-            c.roundRect(119,cy-27,314,54,27,face);
-            if(!m.settingsContent&&!settingsDialog(m))focusFrame(c,119,cy-27,314,54,27);
-        }
         paneIcon(c,pane,135,cy);
-        fitted(c,Face::black,19,181,cy,paneName(pane),236,active?faceText:face);
+        fitted(c,Face::black,19,181,cy,paneName(pane),236,mix(face,faceText,std::clamp(1-std::abs(activeY-cy)/54,0.0f,1.0f)));
     }
 }
 
-void slider(Canvas& c, float rightX, float cy, int value, const ControllerRange& range, bool focused) {
+void slider(Canvas& c, const Model& m, unsigned id, float rightX, float cy, int value, const ControllerRange& range, bool focused) {
     char text[16];std::snprintf(text,sizeof(text),"%d%%",value);
     const float tw=280, tx=rightX-120-tw;
-    const float t=std::clamp(static_cast<float>(value-range.min)/static_cast<float>(range.max-range.min),0.0f,1.0f), kx=tx+tw*t;
+    const float t=std::clamp(static_cast<float>(value-range.min)/static_cast<float>(range.max-range.min),0.0f,1.0f);
+    const float kx=tx+tw*follow(m,motionKey(sliderAnim,id),t,34,0.0005f);
     c.roundRect(tx,cy-4,tw,8,4,face,41);
     if(kx>tx)c.roundRect(tx,cy-4,std::max(8.0f,kx-tx),8,4,accent);
     if(focused)c.disc(kx,cy,20,accent,90);
@@ -1083,24 +1195,30 @@ void controllerPane(Canvas& c, const Model& m) {
     for(unsigned i=0;i<4;++i,y+=h+4) {
         const auto row=static_cast<ControllerRow>(i);
         const int value=*controllerValue(draft,row);
-        rowFrame(c,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==i);
+        rowFrame(c,m,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==i);
         rowText(c,rowsX,y,h,titles[i],descriptions[i],muted,value!=*controllerValue(saved,row),face,760);
-        slider(c,rx,y+h/2,value,controllerRanges[i],m.settingsContent&&m.settingsRow==i);
+        slider(c,m,i,rx,y+h/2,value,controllerRanges[i],m.settingsContent&&m.settingsRow==i);
     }
     const unsigned row=static_cast<unsigned>(ControllerRow::persistGameSettings);
-    rowFrame(c,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==row);
+    rowFrame(c,m,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==row);
     rowText(c,rowsX,y,h,"Persistent in-game settings","Keep in-game graphics settings between sessions. Only affects games that support it; applies to new sessions.",
         muted,draft.persist_game_settings!=saved.persist_game_settings,face,1000);
-    toggle(c,rx,y+h/2,draft.persist_game_settings);
+    toggle(c,m,1,rx,y+h/2,draft.persist_game_settings);
 }
 
-void sheetBackdrop(Canvas& c) {c.roundRect(0,0,1920,1080,0,black,166);}
+enum class Sheet : std::uint32_t { signOut=1, clear, fixed, editor, tile, search };
+void sheetBackdrop(Canvas& c, const Model& m, Sheet kind, bool left) {
+    const float p=reveal(m,motionKey(sheetAnim,static_cast<std::uint32_t>(kind)),26);
+    layer(c,1,0,0);
+    c.roundRect(0,0,1920,1080,0,black,static_cast<unsigned>(166*p+0.5f));
+    layer(c,p,left?-48*(1-p):0,left?0:24*(1-p));
+}
 void sheet(Canvas& c, float x, float y, float w, float h, float radius) {
     c.roundRect(x,y,w,h,radius,sheetFill);
     c.roundRectStroke(x,y,w,h,radius,1,face,seamAlpha);
 }
-float confirmSheet(Canvas& c, Color tone, const char* tag, const char* title, const char* body) {
-    sheetBackdrop(c);
+float confirmSheet(Canvas& c, const Model& m, Sheet kind, Color tone, const char* tag, const char* title, const char* body) {
+    sheetBackdrop(c,m,kind,true);
     sheet(c,48,48,620,984,40);
     c.disc(113,113,32,tone);
     c.roundRect(110,96,6,22,3,faceText);c.disc(113,128,3.5f,faceText);
@@ -1109,17 +1227,17 @@ float confirmSheet(Canvas& c, Color tone, const char* tag, const char* title, co
     const float y=196+lines*48.0f+20;
     return y+drawWrapped(c,Face::semibold,20,81,y,30,body,553,5,muted)*30.0f;
 }
-void sheetActions(Canvas& c, const Button& confirm, const Button& cancel) {
+void sheetActions(Canvas& c, const Model& m, const Button& confirm, const Button& cancel) {
     actionButton(c,confirm,81,784,80,553,22,34);
-    focusFrame(c,81,784,553,80,26);
+    focusRing(c,m,1,81,784,553,80,26);
     actionButton(c,cancel,81,876,72,553,20,30);
     const Hint h[]={{Glyph::cross,confirm.text},{Glyph::circle,cancel.text}};
     hintRow(c,h,2,81,984);
 }
-void signOutConfirm(Canvas& c) {
-    confirmSheet(c,coral,"Sign out","Sign out of NVIDIA on this PS5?",
+void signOutConfirm(Canvas& c, const Model& m) {
+    confirmSheet(c,m,Sheet::signOut,coral,"Sign out","Sign out of NVIDIA on this PS5?",
         "The saved login is deleted from this PS5. Signing out doesn\xE2\x80\x99t remove games from your GeForce NOW library or change purchases on Steam, Epic or other stores.");
-    sheetActions(c,{Glyph::cross,"Sign out",true},{Glyph::circle,"Cancel"});
+    sheetActions(c,m,{Glyph::cross,"Sign out",true},{Glyph::circle,"Cancel"});
 }
 void clearConfirm(Canvas& c, const Model& m) {
     char head[64],removed[48];
@@ -1127,7 +1245,7 @@ void clearConfirm(Canvas& c, const Model& m) {
     const double megabytes=double(m.disk.bytes)/(1024.0*1024.0);
     if(known)std::snprintf(head,sizeof(head),megabytes<10?"Clear %.1f MB of cover art?":"Clear %.0f MB of cover art?",megabytes);
     else std::snprintf(head,sizeof(head),"Clear saved cover art?");
-    float y=confirmSheet(c,coral,"Cover art cache",head,"Covers download again the next time you open Library or Store.")+36;
+    float y=confirmSheet(c,m,Sheet::clear,coral,"Cover art cache",head,"Covers download again the next time you open Library or Store.")+36;
     rule(c,81,y,553);y+=34;
     eyebrow(c,81,y,"Removed",coral,13);
     eyebrow(c,360,y,"Kept",mint,13);
@@ -1136,10 +1254,10 @@ void clearConfirm(Canvas& c, const Model& m) {
     else std::snprintf(removed,sizeof(removed),"All saved cover images");
     drawWrapped(c,Face::bold,18,81,y-13,26,removed,250,2,face);
     for(const char* kept:{"NVIDIA sign-in","Stream settings","Your Library list"}){label(c,Face::bold,18,360,y,kept,face);y+=32;}
-    sheetActions(c,{Glyph::cross,"Clear cache",true},{Glyph::circle,"Keep"});
+    sheetActions(c,m,{Glyph::cross,"Clear cache",true},{Glyph::circle,"Keep"});
 }
 void fixedConfirm(Canvas& c, const Model& m) {
-    float y=confirmSheet(c,yellow,"Hardware H.264","Use fixed-resolution streaming with hardware decoding?",
+    float y=confirmSheet(c,m,Sheet::fixed,yellow,"Hardware H.264","Use fixed-resolution streaming with hardware decoding?",
         "Hardware H.264 can\xE2\x80\x99t follow resolution changes during a stream yet, so the cloud must keep one fixed resolution. This only changes the draft; it still needs Save.")+36;
     rule(c,81,y,553);y+=36;
     const auto change=[&](const char* key,const char* from,const char* to) {
@@ -1153,13 +1271,13 @@ void fixedConfirm(Canvas& c, const Model& m) {
     };
     change("Decoding",m.draft.hardware()?(m.draft.tenBit()?"Hardware HEVC":"Hardware H.264"):"Software","Hardware H.264");
     change("Resolution policy","Adaptive","Fixed");
-    sheetActions(c,{Glyph::cross,"Use fixed resolution",true},{Glyph::circle,"Keep current draft"});
+    sheetActions(c,m,{Glyph::cross,"Use fixed resolution",true},{Glyph::circle,"Keep current draft"});
 }
 void numberEditor(Canvas& c, const Model& m) {
     const auto& e=m.edit;
     const StreamSettings candidate=applyEdit(e,m.draft);
     const auto error=validateSettings(candidate);
-    sheetBackdrop(c);
+    sheetBackdrop(c,m,Sheet::editor,false);
     const float x=440, y=168, w=1040, h=716;
     sheet(c,x,y,w,h,40);
     const bool resolution=e.row==StreamRow::resolution;
@@ -1187,7 +1305,7 @@ void numberEditor(Canvas& c, const Model& m) {
             const bool active=index==e.cursor;
             if(active) {
                 c.roundRect(cx,cellsY,84,116,20,face,26);
-                focusFrame(c,cx,cellsY,84,116,20);
+                focusRing(c,m,1,cx,cellsY,84,116,20);
                 c.line(cx+32,cellsY-14,cx+42,cellsY-24,3,accent);c.line(cx+42,cellsY-24,cx+52,cellsY-14,3,accent);
                 c.line(cx+32,cellsY+130,cx+42,cellsY+140,3,accent);c.line(cx+42,cellsY+140,cx+52,cellsY+130,3,accent);
             } else {
@@ -1238,7 +1356,7 @@ void homeTileSheet(Canvas& c, const Model& m) {
     const auto& t=m.tile;
     const bool working=t.stage==HomeTile::Stage::working;
     const Color tone=working?accent:t.ok?mint:coral;
-    sheetBackdrop(c);
+    sheetBackdrop(c,m,Sheet::tile,true);
     sheet(c,48,48,620,984,40);
     c.disc(113,113,32,tone);
     if(working){c.roundRectStroke(99,99,28,28,7,3,faceText);c.roundRect(107,107,12,12,3,faceText);}
@@ -1255,11 +1373,11 @@ void homeTileSheet(Canvas& c, const Model& m) {
         labelRight(c,Face::mono,16,634,y,percent,muted);
         y+=28;
         c.roundRect(81,y,553,8,4,face,41);
-        c.roundRect(81,y,std::max(8.0f,553.0f*std::min(t.percent,100U)/100.0f),8,4,accent);
+        c.roundRect(81,y,std::max(8.0f,553.0f*follow(m,motionKey(barAnim,2),static_cast<float>(std::min(t.percent,100U))/100.0f,10,0.0005f)),8,4,accent);
         y+=42;
         drawWrapped(c,Face::semibold,18,81,y,27,"OpenNOW downloads the cover and hero art and writes a launcher tile to this PS5. Keep OpenNOW open until it finishes.",553,4,muted);
         actionButton(c,{Glyph::circle,t.cancelling?"Cancelling\xE2\x80\xA6":"Cancel"},81,876,72,553,20,30,!t.cancelling);
-        if(!t.cancelling)focusFrame(c,81,876,553,72,26);
+        if(!t.cancelling)focusRing(c,m,1,81,876,553,72,26);
         if(!t.cancelling){const Hint h[]={{Glyph::circle,"Cancel"}};hintRow(c,h,1,81,984);}
         return;
     }
@@ -1284,16 +1402,19 @@ void homeTileSheet(Canvas& c, const Model& m) {
         drawWrapped(c,Face::black,18,105,y+44,26,"Rescan homebrew in ShadowMountPlus to show the tile",505,2,face);
     }
     actionButton(c,{Glyph::cross,"Done",true},81,876,72,553,20,30);
-    focusFrame(c,81,876,553,72,26);
+    focusRing(c,m,1,81,876,553,72,26);
     const Hint h[]={{Glyph::cross,"Done"},{Glyph::circle,"Close"}};
     hintRow(c,h,2,81,984);
 }
 
 void settings(Canvas& c, const Model& m) {
     screenBase(c,shell);
+    const Layer page=pageLayer(c,m);
     settingsSidebar(c,m);
-    if(m.pane==SettingsPane::stream||m.pane==SettingsPane::controller)draftCard(c,m);
     panel(c,480,124,1344,792,40);
+    const float pane=reveal(m,motionKey(paneAnim,2,static_cast<std::uint32_t>(m.pane)),30);
+    layer(c,page.opacity*(0.4f+0.6f*pane),page.dx,page.dy+14*(1-pane));
+    if(m.pane==SettingsPane::stream||m.pane==SettingsPane::controller)draftCard(c,m);
     label(c,Face::black,34,537,175,paneName(m.pane),face,-0.01f);
     switch(m.pane) {
     case SettingsPane::stream: streamPane(c,m);break;
@@ -1301,7 +1422,7 @@ void settings(Canvas& c, const Model& m) {
     case SettingsPane::controller: controllerPane(c,m);break;
     case SettingsPane::cache: cachePane(c,m);break;
     case SettingsPane::account: accountPane(c,m);break;
-    case SettingsPane::about: aboutPane(c);break;
+    case SettingsPane::about: aboutPane(c,m);break;
     }
     const bool dialog=settingsDialog(m);
     const unsigned rows=settingsRows(m.pane);
@@ -1330,7 +1451,7 @@ void settings(Canvas& c, const Model& m) {
     if(m.edit.open())numberEditor(c,m);
     else if(m.confirmClear)clearConfirm(c,m);
     else if(m.confirmFixed)fixedConfirm(c,m);
-    else if(m.confirmSignOut)signOutConfirm(c);
+    else if(m.confirmSignOut)signOutConfirm(c,m);
 }
 
 void signIn(Canvas& c, const Model& m) {
@@ -1338,6 +1459,7 @@ void signIn(Canvas& c, const Model& m) {
     const bool waiting=v.state==State::waiting, requesting=v.state==State::requesting;
     const bool failed=v.state==State::failed||v.state==State::denied||v.state==State::expired;
     screenBase(c,shell);
+    pageLayer(c,m);
     const char* tag=waiting?"Sign in with NVIDIA":!failed?"Sign in":v.state==State::expired?"Code expired":v.state==State::denied?"Sign-in declined":"Sign-in problem";
     eyebrow(c,120,217,tag,failed?coral:accent,16);
     const char* head=waiting?"Scan the code with your phone":requesting?"Contacting NVIDIA\xE2\x80\xA6":failed?"Sign-in didn\xE2\x80\x99t finish":"Bring your games to the big screen.";
@@ -1367,7 +1489,7 @@ void signIn(Canvas& c, const Model& m) {
     } else {
         const Button start{Glyph::cross,failed?"Try again":"Sign in with NVIDIA",true};
         actionButton(c,start,120,668,72,640,22,34,!requesting);
-        if(!requesting)focusFrame(c,120,668,640,72,26);
+        if(!requesting)focusRing(c,m,0,120,668,640,72,26);
     }
     char status[96];
     Color tone=muted;
@@ -1398,7 +1520,7 @@ void signIn(Canvas& c, const Model& m) {
 
 void searchScreen(Canvas& c, const Model& m) {
     storeScreen(c,m,false);
-    sheetBackdrop(c);
+    sheetBackdrop(c,m,Sheet::search,false);
     const auto& s=m.search;
     const float x=96, y=300, w=1728, h=616;
     sheet(c,x,y,w,h,40);
@@ -1421,7 +1543,7 @@ void searchScreen(Canvas& c, const Model& m) {
         const unsigned col=CatalogSearch::column(i), row=CatalogSearch::row(i);
         const float kx=col<10?x0+col*124.0f:x0+1296+(col-11)*124.0f, ky=y0+row*88.0f;
         const bool focused=i==s.selected;
-        if(focused){c.roundRect(kx,ky,112,76,22,face);focusFrame(c,kx,ky,112,76,22);}
+        if(focused){c.roundRect(kx,ky,112,76,22,face);focusRing(c,m,1,kx,ky,112,76,22);}
         else {c.roundRect(kx,ky,112,76,22,face,18);c.roundRectStroke(kx,ky,112,76,22,1,face,seamAlpha);}
         const Color ink=focused?faceText:face;
         if(CatalogSearch::keys[i]==' ') {
@@ -1451,10 +1573,15 @@ void statusPill(Canvas& c, float rightX, float cy, const char* text, Color tone)
     dot(c,x+22+4.5f,cy,tone);
     label(c,Face::mono,15,x+22+9+10,cy,text,tone,0.12f);
 }
-void stageLine(Canvas& c, float cy, int number, const char* text, const char* sub, int state, Color tone) {
+void stageLine(Canvas& c, const Model& m, float cy, int number, const char* text, const char* sub, int state, Color tone) {
     const float cx=140;
     if(state==2){c.disc(cx,cy,20,mint);c.line(cx-8,cy,cx-2.5f,cy+6,3,faceText);c.line(cx-2.5f,cy+6,cx+8,cy-6,3,faceText);}
-    else if(state==1){c.ring(cx,cy,19,2.5f,tone);c.disc(cx,cy,6,tone);}
+    else if(state==1&&m.streaming){c.ring(cx,cy,19,2.5f,tone);c.disc(cx,cy,6,tone);}
+    else if(state==1) {
+        c.ring(cx,cy,19,2.5f,tone,60);
+        c.arc(cx,cy,19,2.5f,loopPhase(m,1.2f)*6.2831853f,1.9f,tone);
+        c.disc(cx,cy,6,tone);
+    }
     else {
         c.ring(cx,cy,19.5f,1.2f,face,56);
         char n[4];std::snprintf(n,sizeof(n),"%d",number);
@@ -1470,6 +1597,7 @@ void progress(Canvas& c, const Model& m) {
     const bool queue=queued&&cv.queuePosition>=0, setup=queued&&!queue&&cv.setupStep>=0;
     const Game* game=*cv.current.title?&cv.current:nullptr;
     stageBackground(c,m,game);
+    pageLayer(c,m);
     if(game)gameHeader(c,*game);
     const Color tone=queue?yellow:accent;
     statusPill(c,1800,93,connecting?"CONNECTING":queue?"IN QUEUE":queued?"PREPARING":"STARTING",tone);
@@ -1482,13 +1610,21 @@ void progress(Canvas& c, const Model& m) {
     fitted(c,Face::black,80,120,293,head,dial?1060:1680,face,-0.02f);
     drawWrapped(c,Face::semibold,22,120,356,33,text,860,3,muted);
     const int active=connecting?3:queue?1:queued?2:0;
-    stageLine(c,663,1,"Session requested",nullptr,active>0?2:1,tone);
-    stageLine(c,729,2,"Waiting for a rig","Position comes from GeForce NOW",active>1?2:active==1?1:0,tone);
-    stageLine(c,795,3,"Setting up the rig",nullptr,active>2?2:active==2?1:0,tone);
-    stageLine(c,861,4,"Connecting the stream",nullptr,active==3?1:0,tone);
+    const float rail=follow(m,motionKey(railAnim),static_cast<float>(active),12,0.002f);
+    for(int i=0;i<3;++i) {
+        const float top=663+i*66.0f+22, length=66-44;
+        c.roundRect(139,top,2,length,1,face,46);
+        const float filled=std::clamp(rail-static_cast<float>(i),0.0f,1.0f)*length;
+        if(filled>0)c.roundRect(139,top,2,filled,1,mint);
+    }
+    stageLine(c,m,663,1,"Session requested",nullptr,active>0?2:1,tone);
+    stageLine(c,m,729,2,"Waiting for a rig","Position comes from GeForce NOW",active>1?2:active==1?1:0,tone);
+    stageLine(c,m,795,3,"Setting up the rig",nullptr,active>2?2:active==2?1:0,tone);
+    stageLine(c,m,861,4,"Connecting the stream",nullptr,active==3?1:0,tone);
     if(dial) {
         constexpr float cx=1500, cy=510;
         c.ring(cx,cy,258,1.5f,face,56);
+        if(!m.streaming)c.arc(cx,cy,258,3,loopPhase(m,4)*6.2831853f,0.8f,tone,200);
         labelCenter(c,Face::mono,16,cx,cy-121,queue?"QUEUE POSITION":"SETUP STEP",face,0.12f);
         char number[16];std::snprintf(number,sizeof(number),"%d",queue?cv.queuePosition:cv.setupStep);
         const float size=std::strlen(number)>3?130:200;
@@ -1509,6 +1645,7 @@ void failure(Canvas& c, const Model& m) {
     const Screen s=m.screen;
     const Game* game=*cv.current.title?&cv.current:nullptr;
     stageBackground(c,m,game);
+    pageLayer(c,m);
     if(game)gameHeader(c,*game);
     statusPill(c,1800,93,s==Screen::streamEnded?"STREAM ENDED":s==Screen::cleanupFailed?"SESSION RUNNING":"NOT STARTED",coral);
     eyebrow(c,120,223,s==Screen::streamEnded?"Stream ended":s==Screen::cleanupFailed?"Session still running":"Couldn\xE2\x80\x99t start",coral,16);
@@ -1534,12 +1671,12 @@ void failure(Canvas& c, const Model& m) {
         const Hint end{Glyph::options,"End session",Glyph::touchpad,"Hold"};
         const float w=hintWidth(end)+48;
         c.roundRect(120,y,w,72,26,face);
-        focusFrame(c,120,y,w,72,26);
+        focusRing(c,m,0,120,y,w,72,26);
         drawHint(c,end,144,y+36,hintSize,hintLabel);
     } else {
         const float pw=buttonWidth({Glyph::cross,"Try again",true});
         actionButton(c,{Glyph::cross,"Try again",true},120,y);
-        focusFrame(c,120,y,pw,72,26);
+        focusRing(c,m,0,120,y,pw,72,26);
         actionButton(c,s==Screen::streamEnded?Button{Glyph::square,"Back to games"}:Button{Glyph::circle,"Back"},120+pw+14,y);
     }
     const Hint left[]={s==Screen::launchFailed?Hint{Glyph::circle,"Back"}:closeAppHint};
@@ -1608,6 +1745,7 @@ void streamKeyboard(Canvas& c, const Model& m) {
 
 void renderOverlay(Canvas& c, const Overlay& o) noexcept {
     loadFonts();
+    c.resetClip();layer(c,1,0,0);
     const float x=64, y=40, w=1792, h=72, cy=y+h/2;
     c.roundRect(x,y,w,h,36,shell);
     c.roundRectStroke(x,y,w,h,36,1,face,seamAlpha);
@@ -1696,6 +1834,7 @@ unsigned storeSiblings(const CloudView& cloud, unsigned index, unsigned* out, un
 
 void render(Canvas& c, const Model& m) noexcept {
     loadFonts();
+    c.resetClip();layer(c,1,0,0);
     switch(m.screen) {
     case Screen::signIn: signIn(c,m);break;
     case Screen::catalogLoading: case Screen::catalogEmpty: case Screen::catalogError: case Screen::grid:
@@ -1712,5 +1851,6 @@ void render(Canvas& c, const Model& m) noexcept {
     case Screen::cleanupFailed: case Screen::streamEnded: case Screen::launchFailed: failure(c,m);break;
     case Screen::keyboard: streamKeyboard(c,m);break;
     }
+    c.resetClip();layer(c,1,0,0);
 }
 }

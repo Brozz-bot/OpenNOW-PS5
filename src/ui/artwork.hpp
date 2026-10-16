@@ -12,7 +12,7 @@ enum class State { missing, loading, ready, failed };
 constexpr unsigned tileWidth=156, tileHeight=232, heroWidth=960, heroHeight=540;
 constexpr std::size_t maxCompressedBytes=std::size_t(3)<<19;
 constexpr unsigned maxSourceDimension=2048;
-constexpr unsigned tileSlots=36, heroSlots=2;
+constexpr unsigned tileSlots=64, heroSlots=2;
 
 using Fetch=bool (*)(void* context,const char* url,unsigned char* buffer,std::size_t capacity,
                      std::size_t& size,const std::atomic_bool& stop) noexcept;
@@ -20,6 +20,7 @@ using Fetch=bool (*)(void* context,const char* url,unsigned char* buffer,std::si
 bool httpsFetch(void* context,const char* url,unsigned char* buffer,std::size_t capacity,
                 std::size_t& size,const std::atomic_bool& stop) noexcept;
 bool requestUrl(const char* artwork,Kind kind,char* out,std::size_t capacity) noexcept;
+bool artworkFor(const char* request,Kind kind,char* out,std::size_t capacity) noexcept;
 bool decode(const unsigned char* data,std::size_t size,unsigned width,unsigned height,std::uint32_t* out) noexcept;
 
 struct DiskStats {
@@ -36,10 +37,9 @@ public:
     Cache(const Cache&)=delete;
     Cache& operator=(const Cache&)=delete;
     bool ready() const noexcept {return scratch_!=nullptr&&compressed_!=nullptr;}
-    State want(const char* artwork,Kind kind,unsigned frame) noexcept;
-    bool draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha,unsigned visibleHeight=0) noexcept;
-    bool drawHero(ps5::demo::Canvas& canvas,const char* artwork,int x,int y,unsigned width,unsigned height,
-                  const std::uint8_t* columnAlpha,const std::uint8_t* rowAlpha) noexcept;
+    State want(const char* artwork,Kind kind,unsigned frame,bool prefetch=false) noexcept;
+    bool draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float width,float height,float radius,unsigned alpha) noexcept;
+    bool copy(const char* artwork,Kind kind,std::uint32_t* out) noexcept;
     unsigned generation() const noexcept {return generation_.load();}
     void setDiskEnabled(bool enabled) noexcept;
     void requestDiskClear() noexcept;
@@ -55,19 +55,21 @@ private:
         char url[192]{};
         Kind kind=Kind::tile;
         State state=State::missing;
-        bool fetching=false;
+        bool fetching=false,prefetch=false;
         unsigned lastUsed=0;
         std::uint32_t* pixels=nullptr;
     };
     Slot* find(const char* artwork,Kind kind) noexcept;
     void publishDiskStats() noexcept;
+    bool warm() noexcept;
     Fetch fetch_;
     void* context_;
     mutable pthread_mutex_t mutex_=PTHREAD_MUTEX_INITIALIZER;
     DiskCache* disk_=nullptr;
     DiskStats diskStats_{};
     bool diskInitialize_=false;
-    std::uint64_t clearRequested_=0,cleared_=0;
+    std::uint64_t clearRequested_=0,cleared_=0,warmBelow_=~std::uint64_t(0);
+    unsigned warmed_=0;
     Slot slots_[tileSlots+heroSlots]{};
     std::uint32_t* scratch_=nullptr;
     unsigned char* compressed_=nullptr;

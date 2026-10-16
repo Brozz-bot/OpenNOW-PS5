@@ -139,6 +139,19 @@ No proprietary runtime module, encryption key, or game file is included.
 - **ProsperoLight**, BlackBearReloaded, GPL-3.0-or-later: `src/platform/ps5_sockets.c`, `ps5_network_metrics.h`, `console_curl.c`, `console_curl.h`, and the pthread-once compatibility approach. Local adaptations fix no-argument `fcntl` handling, use this application's identity, and integrate the bundled CA file. Revision: `upstream-lock.json`.
 - **cJSON** v1.7.19, Dave Gamble and contributors, MIT. Source: `src/vendor/cJSON.*`; license: `licenses/cJSON.txt`.
 
+## Store brand marks
+
+The store marks in `assets/stores/*.svg` (flattened by `tools/store-marks.py`
+into `src/ui/store_marks.inc`) are copied unchanged from
+**OpenCloudGaming/OpenNOW** `opennow-qt/res/icons/store-*.svg`, revision
+`60ce69a07bf94ba484af7406d386ccb28e5a13e6`. Xbox, GOG.com, EA and NVIDIA come
+from Simple Icons v11.15.0; Steam, Epic Games, Ubisoft and Battle.net from Simple
+Icons v16.35.0; both releases are CC0-1.0 and OpenNOW changed only the fill
+colour. The Gaijin mark comes from gaijin.net; its copyright and trademark remain
+with Gaijin. Every mark only identifies the linked store and implies no
+endorsement; all names and logos remain trademarks of their owners. Details:
+`assets/stores/SOURCES.md`.
+
 ## Television interface fonts and rasterizer (00.002.040)
 
 - **Nunito**, Copyright 2014 The Nunito Project Authors, SIL Open Font License 1.1. Static SemiBold (600), Bold (700), ExtraBold (800) and Black (900) instances of `ofl/nunito/Nunito[wght].ttf`. License: `assets/fonts/licenses/Nunito-OFL.txt`.

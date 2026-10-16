@@ -55,6 +55,15 @@ bool requestUrl(const char* artwork,Kind kind,char* out,std::size_t capacity) no
     return n>0&&static_cast<std::size_t>(n)<capacity;
 }
 
+bool artworkFor(const char* request,Kind kind,char* out,std::size_t capacity) noexcept {
+    char suffix[24];
+    std::snprintf(suffix,sizeof(suffix),";f=jpg;w=%u",kind==Kind::tile?272U:960U);
+    const std::size_t length=std::strlen(request),tail=std::strlen(suffix);
+    if(length<=tail||length-tail>=capacity||std::strcmp(request+length-tail,suffix))return false;
+    std::memcpy(out,request,length-tail);out[length-tail]=0;
+    return artworkUrl(out);
+}
+
 bool decode(const unsigned char* data,std::size_t size,unsigned width,unsigned height,std::uint32_t* out) noexcept {
     if(!data||!out||size<4||size>maxCompressedBytes||!width||!height)return false;
     int sourceWidth=0,sourceHeight=0,components=0;
@@ -142,7 +151,7 @@ Cache::Slot* Cache::find(const char* artwork,Kind kind) noexcept {
     return nullptr;
 }
 
-State Cache::want(const char* artwork,Kind kind,unsigned frame) noexcept {
+State Cache::want(const char* artwork,Kind kind,unsigned frame,bool prefetch) noexcept {
     if(!artworkUrl(artwork)||std::strlen(artwork)>=sizeof(Slot::url))return State::failed;
     pthread_mutex_lock(&mutex_);
     if(clearRequested_!=cleared_){pthread_mutex_unlock(&mutex_);return State::loading;}
@@ -160,29 +169,62 @@ State Cache::want(const char* artwork,Kind kind,unsigned frame) noexcept {
         }
     }
     State state=State::loading;
-    if(slot){slot->lastUsed=frame;state=slot->state;}
+    if(slot) {
+        slot->prefetch=slot->lastUsed==frame?slot->prefetch&&prefetch:prefetch;
+        slot->lastUsed=frame;state=slot->state;
+    }
     pthread_mutex_unlock(&mutex_);
     return state;
 }
 
-bool Cache::draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float radius,unsigned alpha,unsigned visibleHeight) noexcept {
+bool Cache::draw(ps5::demo::Canvas& canvas,const char* artwork,Kind kind,float x,float y,float width,float height,float radius,unsigned alpha) noexcept {
     pthread_mutex_lock(&mutex_);
     const Slot* slot=find(artwork,kind);
     const bool shown=clearRequested_==cleared_&&slot&&slot->state==State::ready&&slot->pixels;
-    const unsigned height=visibleHeight&&visibleHeight<heightOf(kind)?visibleHeight:heightOf(kind);
-    if(shown)canvas.imageRounded(static_cast<int>(std::lround(x)),static_cast<int>(std::lround(y)),widthOf(kind),height,slot->pixels,radius,alpha);
+    const float nativeWidth=static_cast<float>(widthOf(kind)),nativeHeight=static_cast<float>(heightOf(kind));
+    if(shown&&width==nativeWidth&&height==nativeHeight&&x==std::round(x)&&y==std::round(y))
+        canvas.imageRounded(static_cast<int>(x),static_cast<int>(y),widthOf(kind),heightOf(kind),slot->pixels,radius,alpha);
+    else if(shown)canvas.imageScaled(x,y,width,height,slot->pixels,widthOf(kind),heightOf(kind),radius,alpha);
     pthread_mutex_unlock(&mutex_);
     return shown;
 }
 
-bool Cache::drawHero(ps5::demo::Canvas& canvas,const char* artwork,int x,int y,unsigned width,unsigned height,
-                     const std::uint8_t* columnAlpha,const std::uint8_t* rowAlpha) noexcept {
+bool Cache::copy(const char* artwork,Kind kind,std::uint32_t* out) noexcept {
     pthread_mutex_lock(&mutex_);
-    const Slot* slot=find(artwork,Kind::hero);
+    const Slot* slot=find(artwork,kind);
     const bool shown=clearRequested_==cleared_&&slot&&slot->state==State::ready&&slot->pixels;
-    if(shown)canvas.imageFaded(x,y,width,height,slot->pixels,heroWidth,heroHeight,columnAlpha,rowAlpha);
+    if(shown)std::memcpy(out,slot->pixels,pixelsOf(kind)*4);
     pthread_mutex_unlock(&mutex_);
     return shown;
+}
+
+bool Cache::warm() noexcept {
+    pthread_mutex_lock(&mutex_);
+    Slot* empty=nullptr;
+    if(diskStats_.enabled&&disk_&&disk_->available()&&warmed_<tileSlots&&clearRequested_==cleared_)
+        for(unsigned i=0;i<tileSlots&&!empty;++i)if(slots_[i].state==State::missing&&!slots_[i].fetching)empty=&slots_[i];
+    pthread_mutex_unlock(&mutex_);
+    if(!empty)return false;
+    char request[sizeof(DiskCache::Header::url)],artwork[sizeof(Slot::url)];
+    std::uint64_t access=0;
+    if(!disk_->newest(static_cast<unsigned>(Kind::tile),warmBelow_,request,sizeof(request),access)){warmed_=tileSlots;return false;}
+    warmBelow_=access;++warmed_;
+    std::size_t size=0;
+    const bool ok=artworkFor(request,Kind::tile,artwork,sizeof(artwork))&&
+        disk_->get(request,static_cast<unsigned>(Kind::tile),compressed_,maxCompressedBytes,size,false)&&
+        decode(compressed_,size,tileWidth,tileHeight,scratch_);
+    pthread_mutex_lock(&mutex_);
+    if(ok&&!find(artwork,Kind::tile)&&empty->state==State::missing&&!empty->fetching&&clearRequested_==cleared_) {
+        if(!empty->pixels)empty->pixels=static_cast<std::uint32_t*>(std::malloc(pixelsOf(Kind::tile)*4));
+        if(empty->pixels) {
+            std::memcpy(empty->pixels,scratch_,pixelsOf(Kind::tile)*4);
+            std::snprintf(empty->url,sizeof(empty->url),"%s",artwork);
+            empty->kind=Kind::tile;empty->state=State::ready;empty->lastUsed=0;empty->prefetch=true;
+        }
+    }
+    pthread_mutex_unlock(&mutex_);
+    generation_.fetch_add(1);
+    return true;
 }
 
 bool Cache::step() noexcept {
@@ -215,14 +257,15 @@ bool Cache::step() noexcept {
     if(clearRequested_!=cleared_){pthread_mutex_unlock(&mutex_);return true;}
     Slot* chosen=nullptr;
     for(auto& slot:slots_)
-        if(slot.state==State::loading&&!slot.fetching&&(!chosen||slot.lastUsed>chosen->lastUsed))chosen=&slot;
+        if(slot.state==State::loading&&!slot.fetching&&(!chosen||slot.lastUsed>chosen->lastUsed||
+           (slot.lastUsed==chosen->lastUsed&&chosen->prefetch&&!slot.prefetch)))chosen=&slot;
     const bool diskEnabled=diskStats_.enabled;
     if(chosen) {
         chosen->fetching=true;std::memcpy(artwork,chosen->url,sizeof(artwork));kind=chosen->kind;
         cancel_.store(false);diskStats_.busy=diskEnabled;
     }
     pthread_mutex_unlock(&mutex_);
-    if(!chosen)return initialize;
+    if(!chosen)return warm()||initialize;
     if(stop_.load()||paused_.load()) {
         cancel_.store(true);
         pthread_mutex_lock(&mutex_);
