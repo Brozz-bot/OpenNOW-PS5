@@ -12,6 +12,7 @@ build/host-tests/gfn-async-test
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/http_test.cpp src/http.cpp -lcurl -o build/host-tests/http-test
 build/host-tests/http-test
 bash tools/test-app-storage.sh
+bash tools/test-forwarder.sh
 
 ${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Isrc tests/random_test.cpp src/random.cpp -o build/host-tests/random-test
 build/host-tests/random-test

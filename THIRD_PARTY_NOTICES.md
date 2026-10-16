@@ -19,6 +19,37 @@ OpenNOW PS5 is an independent native adaptation made possible by **OpenCloudGami
 | [FFmpeg](https://ffmpeg.org/) | Developer-supplied selection-audio preparation |
 | [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) | Directory-style deployment and hardware validation |
 
+## PS5 title forwarders
+
+- [PS5 Forwarder Format](https://github.com/heydemoura/ps5-forwarder-format),
+  Copyright (C) 2026 heydemoura, GPL-3.0-or-later, revision
+  `22e8762ad7dbd01e18bd8c0e95f86461fdf8aaf4`. Unmodified corresponding
+  format, library, forwarder, launcher, schema, registry, and test source is
+  retained in `vendor/ps5-forwarder-format` with its license. The exact shared
+  `template/eboot.bin` and `template/sce_module/libc.prx` are intentionally
+  vendored under `assets/forwarder-template`. The forwarder contains the
+  standard launcher, whose standalone SHA-256 is also recorded in
+  `upstream-lock.json`. `libc.prx` is the clean-room boilerplate runtime by
+  BlackBearReloaded, built from the source already retained in this repository;
+  its hash matches the generated runtime described below. The app packages the
+  format's GPL license with these assets.
+- [PS5 Forwarder Manager](https://github.com/heydemoura/ps5-forwarder-manager),
+  Copyright (C) 2026 heydemoura, GPL-3.0-or-later, revision
+  `1fce14a7519d963a18f4b048a08bcea4cef59d0d`. `src/forwarder/image.cpp`
+  adapts its `src/fwd/image.cpp` mode-6 BC7 and DX10 DDS encoder to a bounded,
+  streaming output sink. The upstream file's SHA-256 is
+  `4bf949c96ccc527ec531cf6eab3ec853cccec5dcc8a06ca7c9329e41c75cbbf8`.
+  Its credit to `https://ps5-forwarder.mph.am`, bundled module 1212, is
+  preserved. PNG streaming is original project code. Game artwork belongs to
+  its publishers, is fetched from GFN at runtime, and is not redistributed.
+
+The unmodified template inputs have these SHA-256 pins:
+
+| File | SHA-256 |
+| --- | --- |
+| `eboot.bin` | `3944ed19d258d348be0dda445959740919be4f727d6e6766e783b8a01c298331` |
+| `sce_module/libc.prx` | `e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036` |
+
 ## Native build dependencies
 
 The application build uses LLVM/Clang/lld, zlib 1.3.2, and the public

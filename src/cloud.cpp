@@ -163,6 +163,7 @@ struct Json {cJSON* p;explicit Json(const Response& r):p(r.body?cJSON_ParseWithL
 const char* searchQuery=R"(query GetSearchFilterResults($vpcId:String!,$locale:String!,$fetchCount:Int!,$cursor:String!,$searchString:String!,$filters:AppFilterFields!){apps(vpcId:$vpcId,language:$locale,orderBy:"itemMetadata.relevance:DESC,sortName:ASC",first:$fetchCount,after:$cursor,searchQuery:$searchString,filters:$filters){)" OPENNOW_APP_FIELDS "}}";
 const char* browseQuery=R"(query GetFilterBrowseResults($vpcId:String!,$locale:String!,$fetchCount:Int!,$cursor:String!,$filters:AppFilterFields!){apps(vpcId:$vpcId,language:$locale,orderBy:"itemMetadata.relevance:DESC,sortName:ASC",first:$fetchCount,after:$cursor,filters:$filters){)" OPENNOW_APP_FIELDS "}}";
 const char* libraryQuery=R"(query GetFilterBrowseResults($vpcId:String!,$locale:String!,$fetchCount:Int!,$cursor:String!,$filters:AppFilterFields!){apps(vpcId:$vpcId,language:$locale,orderBy:"variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC",first:$fetchCount,after:$cursor,filters:$filters){)" OPENNOW_APP_FIELDS "}}";
+const char* launchQuery=R"(query OpenNowGame($vpcId:String!,$locale:String!,$ids:[Int]!){apps(vpcId:$vpcId,language:$locale,variantIds:$ids){items{id title images{GAME_BOX_ART KEY_ART HERO_IMAGE TV_BANNER} gfn{playabilityState} variants{id appStore gfn{status library{status playStatus}}}}}})";
 #undef OPENNOW_APP_FIELDS
 void pickArtwork(char* out,std::size_t capacity,const cJSON* images,std::initializer_list<const char*> keys) {
     out[0]=0;
@@ -360,6 +361,53 @@ void Cloud::launchEntry(CatalogSource source,unsigned index,const char* jwt,cons
     if(entries.state!=CloudState::catalog||index>=entries.count)return;
     if(source==CatalogSource::browse)view_.selected=index;
     const Game game=entries.games[index];
+    start(game,jwt,device,now,settings,audioChannels);
+}
+void Cloud::launchId(const char* appId,const char* store,const char* jwt,const char* device,std::uint64_t now,const StreamSettings& settings,unsigned audioChannels) noexcept {
+    if(*session_.id||view_.state==CloudState::starting||view_.state==CloudState::queued||view_.state==CloudState::ready)return;
+    view_.current={};view_.launchError=false;
+    unsigned numericId=0;
+    if(!appId||!*appId||std::strlen(appId)>=sizeof(Game::id)||!store||std::strlen(store)>=sizeof(Game::store)){failLaunch("Invalid forwarded game identity");return;}
+    for(const char* p=appId;*p;++p) {
+        if(*p<'0'||*p>'9'||numericId>(2147483647U-static_cast<unsigned>(*p-'0'))/10){failLaunch("Forwarded game ID is not a positive GraphQL Int");return;}
+        numericId=numericId*10+static_cast<unsigned>(*p-'0');
+    }
+    if(!numericId){failLaunch("Forwarded game ID is not a positive GraphQL Int");return;}
+    if(!connect(jwt,device,view_)){view_.launchError=true;return;}
+    auto* root=cJSON_CreateObject();auto* vars=cJSON_AddObjectToObject(root,"variables");
+    cJSON_AddStringToObject(root,"query",launchQuery);
+    cJSON_AddStringToObject(vars,"vpcId",vpc_);cJSON_AddStringToObject(vars,"locale","en_US");
+    cJSON_AddItemToArray(cJSON_AddArrayToObject(vars,"ids"),cJSON_CreateNumber(numericId));
+    char* body=cJSON_PrintUnformatted(root);cJSON_Delete(root);
+    if(!body){failLaunch("Out of memory");return;}
+    const auto r=request_(context_,"POST","https://games.geforce.com/graphql",body,jwt,device);cJSON_free(body);
+    if(r.error){failLaunch(r.error);return;}
+    Game game;
+    {
+        Json result(r);const auto* items=obj(obj(obj(result.p,"data"),"apps"),"items");
+        if(r.status!=200||cJSON_GetArraySize(obj(result.p,"errors"))||!cJSON_IsArray(items)||cJSON_GetArraySize(items)>60){failLaunch("Unable to look up forwarded game");return;}
+        const cJSON* app;cJSON_ArrayForEach(app,items) {
+            const auto* variants=obj(app,"variants");
+            if(!cJSON_IsArray(variants)||cJSON_GetArraySize(variants)>128){failLaunch("Invalid forwarded game catalog response");return;}
+            const cJSON* variant;cJSON_ArrayForEach(variant,variants) {
+                if(std::strcmp(str(variant,"id"),appId))continue;
+                if(*game.id){failLaunch("Forwarded game identity is ambiguous");return;}
+                if(!copy(game.id,str(variant,"id"))||!copy(game.title,str(app,"title"))||!*game.title||
+                   !copy(game.store,str(variant,"appStore"))||!*game.store){failLaunch("Invalid forwarded game catalog response");return;}
+                view_.current=game;
+                if(*store&&std::strcmp(game.store,store)){failLaunch("Forwarded game store no longer matches the catalog");return;}
+                const auto* gfn=obj(variant,"gfn");const auto* library=obj(gfn,"library");
+                game.owned=ownedLibraryStatus(str(library,"status"));
+                if(!game.owned){failLaunch("This game is not in your NVIDIA library for this store");return;}
+                if(std::strcmp(str(obj(app,"gfn"),"playabilityState"),"PLAYABLE")||std::strcmp(str(gfn,"status"),"AVAILABLE")||!std::strcmp(str(library,"playStatus"),"NOT_PLAYABLE")){
+                    failLaunch("This store version is not currently playable on GeForce NOW");return;
+                }
+                pickArtwork(game.art,sizeof(game.art),obj(app,"images"),{"GAME_BOX_ART","KEY_ART","HERO_IMAGE","TV_BANNER"});
+                pickArtwork(game.hero,sizeof(game.hero),obj(app,"images"),{"HERO_IMAGE","TV_BANNER","KEY_ART"});
+            }
+        }
+    }
+    if(!*game.id){failLaunch("Forwarded game was not found in the NVIDIA catalog");return;}
     start(game,jwt,device,now,settings,audioChannels);
 }
 void Cloud::dismissLaunchError() noexcept {

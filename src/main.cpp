@@ -8,6 +8,10 @@
 #include "http.hpp"
 #include "random.hpp"
 #include "cloud.hpp"
+#include "forwarder/launch_args.hpp"
+#ifndef OPENNOW_HOST_PREVIEW
+#include "forwarder/forwarder.hpp"
+#endif
 #include "catalog_search.hpp"
 #include "input/input_queue.hpp"
 #include "input/stream_keyboard.hpp"
@@ -110,6 +114,9 @@ bool confirmFixed=false;
 Request lastLaunch;
 bool hasLastLaunch=false;
 unsigned artFrame=0;
+opennow::forwarder::LaunchArgs launchArgs;
+std::atomic_bool forwardLaunchMode{false};
+bool startupFailure=false;
 
 #ifdef OPENNOW_HOST_PREVIEW
 bool previewVideo=false;
@@ -198,6 +205,7 @@ void* worker(void*) {
         return opennow::sessionFile::save(OPENNOW_SESSION_PATH,login.userId(),session,resumeAllowed)==0&&
             opennow::sessionFile::load(OPENNOW_SESSION_PATH,login.userId(),retainedProfile)==opennow::sessionFile::Status::loaded;
     };
+    bool forwardPending=launchArgs.status==opennow::forwarder::LaunchArgsStatus::valid;
     char streamFailure[192]{};
     opennow::ui::StreamStore store;
     pthread_mutex_lock(&viewMutex);const bool artworkStart=artworkWanted;pthread_mutex_unlock(&viewMutex);
@@ -227,7 +235,8 @@ void* worker(void*) {
     for (;;) {
         Request request;
         const int action=takeCommand(request);
-        if(action==10||action==11) {
+        if(action==10||action==11||action==18) {
+            forwardPending=false;forwardLaunchMode.store(false);
             http.cancelled.store(false);
             refreshHttp.cancelled.store(true);
 #ifndef OPENNOW_HOST_PREVIEW
@@ -240,11 +249,13 @@ void* worker(void*) {
             if(stopped&&(hadSession||action==11)){opennow::sessionFile::remove(OPENNOW_SESSION_PATH);retainedProfile={};profileSaveFailed=false;}
             if(action==10){ps5::demo::requestStop();return nullptr;}
             if(stopped) {
-                login.cancel();cloud.reset();catalogLoaded=false;streamFailure[0]=0;
+                if(action!=18)login.cancel();
+                cloud.reset();catalogLoaded=false;streamFailure[0]=0;
             }
             refreshHttp.cancelled.store(false);
         }
         if (action==2) {
+            forwardPending=false;forwardLaunchMode.store(false);
             http.cancelled.store(false);
 #ifndef OPENNOW_HOST_PREVIEW
             stream.stop();
@@ -270,8 +281,21 @@ void* worker(void*) {
         }
         const auto now=sceKernelGetProcessTime();
         login.tickAsync(now/1000000,opennow::Http::request,&refreshHttp);
+        if(command.load()==18)continue;
         if(login.view().state==State::authenticated) {
-            if(!catalogLoaded) {
+            if(forwardPending) {
+                forwardPending=false;
+                launchSettings=store.defaults;
+                const unsigned audioChannels=opennow::audio::requestedChannels(launchSettings.audio_mode,audioCapacity);
+                pthread_mutex_lock(&viewMutex);
+                publishedCloud.state=CloudState::starting;publishedLaunch=launchSettings;
+                publishedAudio={audioCapacity,audioChannels,0,false};
+                std::snprintf(publishedCloud.message,sizeof(publishedCloud.message),"Looking up forwarded game...");
+                pthread_mutex_unlock(&viewMutex);
+                cloud.launchId(launchArgs.appId,launchArgs.store,login.cloudToken(),id,now/1000000,launchSettings,audioChannels);
+                streamAttempted=false;
+            }
+            if(!catalogLoaded&&!forwardLaunchMode.load()) {
                 publish(login.view());
                 pthread_mutex_lock(&viewMutex);publishedLibrary.state=CloudState::loading;publishedCloud.state=CloudState::loading;pthread_mutex_unlock(&viewMutex);
                 cloud.loadPage(CatalogSource::library,0,login.cloudToken(),id);
@@ -316,9 +340,9 @@ void* worker(void*) {
                 pthread_mutex_lock(&viewMutex);std::memcpy(search,pendingSearch,sizeof(search));pthread_mutex_unlock(&viewMutex);
                 cloud.load(login.cloudToken(),id,search,false);
             }
-            if(const int pending=command.load();pending==2||pending==10||pending==11)continue;
+            if(const int pending=command.load();pending==2||pending==10||pending==11||pending==18)continue;
             cloud.tick(login.cloudToken(),id,now/1000000);
-            if(const int pending=command.load();pending==2||pending==10||pending==11)continue;
+            if(const int pending=command.load();pending==2||pending==10||pending==11||pending==18)continue;
             if(!profileSaveFailed&&!retainProfile()) {
                 profileSaveFailed=true;streamAttempted=true;
                 std::snprintf(streamFailure,sizeof(streamFailure),"Could not save the session resume profile");
@@ -383,8 +407,15 @@ void* worker(void*) {
 #endif
         pthread_mutex_unlock(&viewMutex);
         // A cancellation during a blocking request must win over its response.
-        if (command.load()==2||command.load()==10||command.load()==11) continue;
-        publish(login.view());
+        if (command.load()==2||command.load()==10||command.load()==11||command.load()==18) continue;
+        auto view=login.view();
+        if(forwardLaunchMode.load()) {
+            if(launchArgs.status==opennow::forwarder::LaunchArgsStatus::invalid) {
+                view.state=State::failed;
+                std::snprintf(view.message,sizeof(view.message),"Invalid forwarder arguments. Press CIRCLE for the normal launcher");
+            } else if(view.state==State::idle)std::snprintf(view.message,sizeof(view.message),"Sign in to launch this game. CIRCLE for the normal launcher");
+        }
+        publish(view);
         sceKernelUsleep(publishedStream?2000:100000);
     }
 }
@@ -569,6 +600,11 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     pthread_mutex_lock(&viewMutex);publishedPad=gamePad;pthread_mutex_unlock(&viewMutex);
     const auto screenNow=[&]{return opennow::ui::screenFor({v,cv,lv,section,streaming,sessionOwned,streamFailed,searchInput.open,detailOpen});};
     Screen screen=screenNow();
+    if(startupFailure&&(pressed&PS5_PAD_BUTTON_CIRCLE)){ps5::demo::requestStop();pressed=0;}
+    if(forwardLaunchMode.load()&&!streaming&&(pressed&PS5_PAD_BUTTON_CIRCLE)) {
+        if(activeHttp)activeHttp->cancelled.store(true);
+        submit(18,{});pressed=0;
+    }
     if(screen!=Screen::detail)detailOpen=false;
     if(screen!=Screen::settings){confirmSignOut=confirmClear=confirmFixed=false;numberEdit={};}
     const bool topLevel=screen==Screen::grid||screen==Screen::catalogEmpty||screen==Screen::catalogError||
@@ -773,7 +809,9 @@ bool previewFetch(void*,const char* url,unsigned char* buffer,std::size_t capaci
 }
 #endif
 }
-int main() {
+int main(int argc,char** argv) {
+    launchArgs=opennow::forwarder::parseLaunchArgs(argc,argv);
+    forwardLaunchMode.store(launchArgs.status!=opennow::forwarder::LaunchArgsStatus::none);
 #ifdef OPENNOW_HOST_PREVIEW
     const char* scene=std::getenv("OPENNOW_PREVIEW_SCENE");
     const std::string_view name(scene?scene:"library");
@@ -910,9 +948,21 @@ int main() {
     ps5::demo::run(draw,"Host preview - fixture data");
     return 0;
 #else
+    sceNetInit();
+    const auto forwarding=opennow::forwarder::initialize();
+    if(opennow::forwarder::fatalStartup()) {
+        startupFailure=true;forwardLaunchMode.store(false);
+        published.state=State::failed;
+        std::snprintf(published.message,sizeof(published.message),"%s. Press CIRCLE to close",opennow::forwarder::message(forwarding.code));
+        sceUserServiceInitialize(nullptr);scePadInit();
+        ps5::demo::run(draw,"OpenNOW startup failed");
+        if(pad>=0)(void)scePadClose(pad);
+        (void)sceSystemServiceLoadExec("exit",nullptr);
+        for(;;)sceKernelUsleep(1000000);
+    }
     storageError=opennow::appStorage::initialize();
     opennow::gpu::initialize();
-    sceNetInit(); sceUserServiceInitialize(nullptr); scePadInit();
+    sceUserServiceInitialize(nullptr); scePadInit();
     activeHttp=new opennow::Http;
     static opennow::art::Cache cache(opennow::art::httpsFetch,nullptr,storageError?nullptr:OPENNOW_ARTWORK_CACHE_PATH);
     {

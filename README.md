@@ -60,6 +60,15 @@ One recorded console test received and presented a 3840 × 2160 Main10 SDR strea
 - Audio is stereo only. Surround (5.1 and 7.1) is turned off for now. Broader game, display, firmware, and loader compatibility needs testing.
 - Software decoding supports H.264 SDR only. Hardware H.264 and HEVC Main10 modes are offered only after startup qualification. AV1 is not implemented; the current [PS5_Vulkan video limitations](https://github.com/mihawk-99/PS5_Vulkan/blob/f3cbf875f89978deae9f855b9be2610cec2818ae/docs/CTS_GAPS.md) do not provide an alternative decoder.
 
+## Game home-screen tiles
+
+OpenNOW accepts standard PS5 forwarder tiles that launch one GeForce NOW
+catalog variant directly, using saved login and stream settings. This needs
+ShadowMountPlus and either the standard launcher or a compatible elfldr.
+The new writer API provides creation, listing, and removal for the game-detail
+UI integration. See [title forwarding](docs/TITLE_FORWARDING.md) for the argv
+contract, permission requirements, API, and remaining console tests.
+
 ## Install
 
 You need a compatible native-homebrew PS5 environment, a GeForce NOW account with access to the games and streaming modes you want, and a suitable display. This is a **directory package**, not a retail PKG installer.

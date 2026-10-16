@@ -19,5 +19,11 @@
   "OpenGNM-PSBC-patched-archive-sha256": "2b1f76b6b914f36d0ec096ddf042c570d1cf97cd341cbcf001adc8910bcf9a1e",
   "OpenNOW-NVST-QoS-reference": "60ce69a07bf94ba484af7406d386ccb28e5a13e6",
   "OpenNOW-vita-fixed-resolution-protocol-reference": "654a9356a9f01df4a67ea802b8f8c96af7ea2ca3",
-  "PS5-Vulkan-documentation-reference": "4271e2e309d9a7eea3a893f5b94427bb78e586ed"
+  "PS5-Vulkan-documentation-reference": "4271e2e309d9a7eea3a893f5b94427bb78e586ed",
+  "OpenNOW-forwarding-reference": "60ce69a07bf94ba484af7406d386ccb28e5a13e6",
+  "ps5-forwarder-format": "22e8762ad7dbd01e18bd8c0e95f86461fdf8aaf4",
+  "ps5-forwarder-manager-image-reference": "1fce14a7519d963a18f4b048a08bcea4cef59d0d",
+  "ps5-forwarder-template-eboot-sha256": "3944ed19d258d348be0dda445959740919be4f727d6e6766e783b8a01c298331",
+  "ps5-forwarder-template-libc-sha256": "e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036",
+  "ps5-forwarder-template-embedded-launcher-sha256": "21013001a777ffacf2d1104984989c705e57b5d855c45090fe8ba12cfa465d84"
 }
