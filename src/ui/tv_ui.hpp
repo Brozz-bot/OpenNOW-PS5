@@ -19,15 +19,17 @@ enum class SettingsPane { stream, display, controller, cache, account, about };
 constexpr unsigned gridColumns(Section section) noexcept {return section==Section::library?7:10;}
 constexpr unsigned settingsPanes=6;
 
-struct ControllerSettings {
-    int leftDeadzone=5, rightDeadzone=5, vibration=100, mouseSensitivity=100;
-    bool persistGameSettings=true;
-    bool persistSupported=false;
+struct HomeTile {
+    enum class Stage { hidden, working, done };
+    Stage stage=Stage::hidden;
+    bool ok=false, cancelling=false;
+    unsigned percent=0, revision=0;
+    int error=0;
+    const char* step="";
+    const char* message="";
+    char titleId[10]{};
+    Game game{};
 };
-enum class ControllerRow { leftDeadzone, rightDeadzone, vibration, mouseSensitivity, persistGameSettings, count };
-struct ControllerRange { int min, max, step; };
-constexpr ControllerRange controllerRanges[]={{0,50,1},{0,50,1},{0,100,10},{10,300,10}};
-void adjustController(ControllerSettings& settings, unsigned row, int direction) noexcept;
 
 struct Inputs {
     const View& login;
@@ -38,7 +40,7 @@ struct Inputs {
 };
 Screen screenFor(const Inputs&) noexcept;
 const CloudView& catalogFor(Section section,const CloudView& session,const CloudView& library) noexcept;
-unsigned settingsRows(SettingsPane pane, const ControllerSettings& controller={}) noexcept;
+unsigned settingsRows(SettingsPane pane) noexcept;
 
 unsigned qualifiedPresets(StreamProfile* out, unsigned capacity, bool (*available)(const StreamSettings&)) noexcept;
 unsigned storeSiblings(const CloudView& cloud, unsigned index, unsigned* out, unsigned capacity) noexcept;
@@ -96,8 +98,8 @@ struct Model {
     const StreamSettings& proposal;
     bool confirmFixed;
     AudioInfo audio;
-    const ControllerSettings& controller;
     const char* detailAction;
+    const HomeTile& tile;
 };
 void render(ps5::demo::Canvas& canvas, const Model& model) noexcept;
 struct Overlay { const StreamKeyboard& keyboard; bool launcher; unsigned speed; bool inputReady; };

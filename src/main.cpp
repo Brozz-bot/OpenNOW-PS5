@@ -103,8 +103,11 @@ unsigned detailChoice=0;
 SettingsPane settingsPane=SettingsPane::stream;
 bool settingsContent=false;
 unsigned settingsRow=0;
-opennow::ui::ControllerSettings controllerSettings;
 const char* detailAction=nullptr;
+opennow::ui::HomeTile publishedTile;
+opennow::Game tileGame;
+std::atomic_bool tileCancel{false};
+std::atomic_bool tileRunning{false};
 bool confirmSignOut=false;
 opennow::StreamSettings draft{};
 opennow::StreamSettings proposal{};
@@ -163,6 +166,65 @@ void rejectLaunch(opennow::CloudView& view,const char* reason,const opennow::Gam
 void setArtwork(bool enabled) noexcept {
     pthread_mutex_lock(&viewMutex);const bool changed=artworkWanted!=enabled;artworkWanted=enabled;pthread_mutex_unlock(&viewMutex);
     if(changed&&artCache)artCache->setDiskEnabled(enabled);
+}
+void publishTile(opennow::ui::HomeTile tile) noexcept {
+    pthread_mutex_lock(&viewMutex);tile.revision=publishedTile.revision+1;publishedTile=tile;pthread_mutex_unlock(&viewMutex);
+}
+#ifndef OPENNOW_HOST_PREVIEW
+void* tileThread=nullptr;
+bool tileAvailable() noexcept {return opennow::forwarder::available();}
+void tileProgress(void*,const opennow::forwarder::Progress& progress) noexcept {
+    using Phase=opennow::forwarder::Phase;
+    const char* step=progress.phase==Phase::checking?"Checking for a free tile":progress.phase==Phase::downloadingIcon?"Downloading the icon":
+        progress.phase==Phase::downloadingBackground?"Downloading the background":progress.phase==Phase::writing?"Writing the tile":
+        progress.phase==Phase::publishing?"Publishing the tile":"Finishing";
+    pthread_mutex_lock(&viewMutex);
+    publishedTile.step=step;publishedTile.percent=progress.total?progress.completed*100/progress.total:0;++publishedTile.revision;
+    pthread_mutex_unlock(&viewMutex);
+}
+void* tileWorker(void*) {
+    const opennow::forwarder::Job job{&tileCancel,tileProgress,nullptr};
+    const auto result=opennow::forwarder::create(tileGame,{},job);
+    pthread_mutex_lock(&viewMutex);
+    auto& tile=publishedTile;
+    tile.stage=opennow::ui::HomeTile::Stage::done;tile.ok=result.ok();tile.error=result.error;tile.percent=100;
+    tile.message=opennow::forwarder::message(result.code);
+    std::memcpy(tile.titleId,result.titleId,sizeof(tile.titleId));tile.titleId[sizeof(tile.titleId)-1]=0;
+    ++tile.revision;
+    pthread_mutex_unlock(&viewMutex);
+    tileRunning.store(false);
+    return nullptr;
+}
+bool launchTile() noexcept {
+    if(tileThread){(void)scePthreadJoin(tileThread,nullptr);tileThread=nullptr;}
+    void* attributes=nullptr;
+    if(scePthreadAttrInit(&attributes)!=0)return false;
+    int result=scePthreadAttrSetstacksize(&attributes,1024*1024);
+    if(result==0)result=scePthreadCreate(&tileThread,&attributes,tileWorker,nullptr,"opennow-tile");
+    scePthreadAttrDestroy(&attributes);
+    if(result!=0)tileThread=nullptr;
+    return result==0;
+}
+#else
+bool previewTileAvailable=false;
+bool tileAvailable() noexcept {return previewTileAvailable;}
+bool launchTile() noexcept {return true;}
+#endif
+void beginTile(Section s,unsigned focus) noexcept {
+    opennow::ui::HomeTile next;
+    pthread_mutex_lock(&viewMutex);
+    const auto& view=s==Section::library?publishedLibrary:publishedCloud;
+    const bool found=focus<view.count;
+    if(found)next.game=view.games[focus];
+    pthread_mutex_unlock(&viewMutex);
+    if(!found)return;
+    next.stage=opennow::ui::HomeTile::Stage::working;next.step="Checking for a free tile";
+    tileGame=next.game;tileCancel.store(false);tileRunning.store(true);
+    publishTile(next);
+    if(launchTile())return;
+    tileRunning.store(false);
+    next.stage=opennow::ui::HomeTile::Stage::done;next.message="Couldn\xE2\x80\x99t start the tile writer. Try again.";
+    publishTile(next);
 }
 void publish(const opennow::View& v) {
     pthread_mutex_lock(&viewMutex); published=v; pthread_mutex_unlock(&viewMutex);
@@ -521,7 +583,9 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     opennow::RumbleNotice rumbleNotice;
     std::uint64_t rumbleSession=0;
     opennow::StreamSettings defaults,launch;opennow::ui::SettingsInfo settings;opennow::ui::AudioInfo audio;
+    static opennow::ui::HomeTile tile;
     pthread_mutex_lock(&viewMutex);
+    tile=publishedTile;
     v=published;cv=publishedCloud;lv=publishedLibrary;streaming=publishedStream;inputReady=publishedInputReady;sessionOwned=publishedSession;
     streamFailed=publishedStreamFailure;defaults=publishedDefaults;launch=publishedLaunch;settings=publishedSettings;audio=publishedAudio;
     rumbleNotice=publishedRumble;rumbleSession=publishedStreamGeneration;
@@ -531,6 +595,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     opennow::StreamSettings choices[1+static_cast<unsigned>(StreamProfile::count)];
     const unsigned choiceCount=launchChoices(defaults,choices,1+static_cast<unsigned>(StreamProfile::count));
     if(detailChoice>=choiceCount)detailChoice=0;
+    detailAction=!streaming&&tileAvailable()?"Add to Home Screen":nullptr;
     const bool input=pressed!=0;
     if(artCache)artCache->setPaused(streaming||sessionOwned||cv.state==CloudState::starting||cv.state==CloudState::queued||cv.state==CloudState::ready);
     syncBrowser(Section::library,lv);
@@ -643,6 +708,12 @@ bool draw(ps5::demo::Canvas& c) noexcept {
         if(pressed&PS5_PAD_BUTTON_CROSS){if(artCache)artCache->requestDiskClear();confirmClear=false;}
         else if(pressed&PS5_PAD_BUTTON_CIRCLE)confirmClear=false;
         pressed=0;
+    } else if(screen==Screen::detail&&tile.stage!=opennow::ui::HomeTile::Stage::hidden) {
+        if(tile.stage==opennow::ui::HomeTile::Stage::working&&(pressed&PS5_PAD_BUTTON_CIRCLE)&&!tile.cancelling) {
+            tileCancel.store(true);
+            pthread_mutex_lock(&viewMutex);publishedTile.cancelling=true;++publishedTile.revision;pthread_mutex_unlock(&viewMutex);
+        } else if(tile.stage==opennow::ui::HomeTile::Stage::done&&(pressed&(PS5_PAD_BUTTON_CROSS|PS5_PAD_BUTTON_CIRCLE)))publishTile({});
+        pressed=0;
     } else if(detailOpen&&(pressed&PS5_PAD_BUTTON_CIRCLE)) {
         detailOpen=false;pressed&=~PS5_PAD_BUTTON_CIRCLE;
     } else if(screen==Screen::settings&&settingsContent&&(pressed&PS5_PAD_BUTTON_CIRCLE)) {
@@ -678,6 +749,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                 break;
             }
             if(pressed&PS5_PAD_BUTTON_CROSS)launchFocused(detailSection,choices[detailChoice]);
+            else if((pressed&PS5_PAD_BUTTON_TRIANGLE)&&detailAction&&!tileRunning.load())beginTile(detailSection,b.focus);
         } else if(topLevel) {
             if((pressed&(PS5_PAD_BUTTON_L1|PS5_PAD_BUTTON_R1))&&!settingsContent) {
                 const int next=static_cast<int>(section)+((pressed&PS5_PAD_BUTTON_R1)?1:-1);
@@ -687,7 +759,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                     if(view.state==CloudState::idle&&!view.count)requestPage(section,0,1);
                 }
             } else if(screen==Screen::settings) {
-                const unsigned rows=opennow::ui::settingsRows(settingsPane,controllerSettings);
+                const unsigned rows=opennow::ui::settingsRows(settingsPane);
                 if(!settingsContent) {
                     const int pane=static_cast<int>(settingsPane);
                     if(pressed&PS5_PAD_BUTTON_UP)settingsPane=static_cast<SettingsPane>(std::max(pane-1,0));
@@ -698,10 +770,12 @@ bool draw(ps5::demo::Canvas& c) noexcept {
                     if((pressed&PS5_PAD_BUTTON_DOWN)&&settingsRow+1<rows)++settingsRow;
                     if(settingsPane==SettingsPane::stream)editStream(pressed,caps);
                     else if(settingsPane==SettingsPane::controller) {
-                        if(pressed&PS5_PAD_BUTTON_LEFT)opennow::ui::adjustController(controllerSettings,settingsRow,-1);
-                        if(pressed&PS5_PAD_BUTTON_RIGHT)opennow::ui::adjustController(controllerSettings,settingsRow,1);
-                        if((pressed&PS5_PAD_BUTTON_CROSS)&&settingsRow==static_cast<unsigned>(opennow::ui::ControllerRow::persistGameSettings))
-                            controllerSettings.persistGameSettings=!controllerSettings.persistGameSettings;
+                        using opennow::ui::ControllerRow;
+                        const auto row=static_cast<ControllerRow>(settingsRow);
+                        const int direction=(pressed&PS5_PAD_BUTTON_RIGHT)?1:(pressed&PS5_PAD_BUTTON_LEFT)?-1:0;
+                        if(direction)draft=opennow::ui::stepController(draft,row,direction);
+                        if((pressed&PS5_PAD_BUTTON_CROSS)&&row==ControllerRow::persistGameSettings)draft.persist_game_settings=!draft.persist_game_settings;
+                        draftCommands(pressed);
                     } else if(settingsPane==SettingsPane::cache) {
                         if(settingsRow==0&&(pressed&(PS5_PAD_BUTTON_LEFT|PS5_PAD_BUTTON_RIGHT)))setArtwork(pressed&PS5_PAD_BUTTON_RIGHT);
                         if(settingsRow==0&&(pressed&PS5_PAD_BUTTON_CROSS))setArtwork(!artworkWanted);
@@ -771,7 +845,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     static opennow::CloudView previousCloud,previousLibrary;
     static opennow::View previous;
     static opennow::StreamSettings previousDefaults,previousLaunch;
-    static unsigned previousArt=~0U;
+    static unsigned previousArt=~0U,previousTile=~0U;
     static opennow::ui::SettingsInfo previousSettings;
     static opennow::ui::AudioInfo previousAudio;
     static opennow::art::DiskStats previousDisk;
@@ -784,10 +858,10 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     if(!first&&!input&&artGeneration==previousArt&&std::memcmp(&previous,&v,sizeof(v))==0&&
        std::memcmp(&previousCloud,&cv,sizeof(cv))==0&&std::memcmp(&previousLibrary,&lv,sizeof(lv))==0&&
        previousDefaults==defaults&&previousLaunch==launch&&std::memcmp(&previousSettings,&settings,sizeof(settings))==0&&previousAudio==audio&&
-       previousReady==inputReady&&previousKeyboard==keyboard.open&&diskSame)
+       previousReady==inputReady&&previousKeyboard==keyboard.open&&diskSame&&previousTile==tile.revision)
         return false;
     first=false;previous=v;previousCloud=cv;previousLibrary=lv;previousDefaults=defaults;previousLaunch=launch;previousDisk=disk;
-    previousSettings=settings;previousAudio=audio;previousArt=artGeneration;previousReady=inputReady;previousKeyboard=keyboard.open;
+    previousSettings=settings;previousAudio=audio;previousArt=artGeneration;previousTile=tile.revision;previousReady=inputReady;previousKeyboard=keyboard.open;
 #ifndef OPENNOW_HOST_PREVIEW
     const char* output=opennow::gpu::outputLabel();
 #else
@@ -797,7 +871,7 @@ bool draw(ps5::demo::Canvas& c) noexcept {
     opennow::ui::render(c,{screen,shownSection,v,cv,lv,defaults,launch,choices,choiceCount,detailChoice,
         browserFor(shownSection).focus,searchInput,shownSearch,output,streaming,settingsPane,settingsContent,settingsRow,confirmSignOut,
         settings,artCache,++artFrame,keyboard,inputReady,draft,caps,acceptSettings(draft),adjusted,numberEdit,
-        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio,controllerSettings,detailAction});
+        numberEdit.open()&&acceptSettings(opennow::ui::applyEdit(numberEdit,draft)),disk,artworkWanted,confirmClear,proposal,confirmFixed,audio,detailAction,tile});
     return true;
 }
 #ifdef OPENNOW_HOST_PREVIEW
@@ -890,9 +964,15 @@ int main(int argc,char** argv) {
         section=Section::browse;publishedCloud.state=CloudState::loading;browsers[1].focus=13;browsers[1].target=1;browsers[1].pending=1;
     } else if(name=="search") {
         section=Section::browse;searchInput.open=true;std::snprintf(searchInput.text,sizeof(searchInput.text),"DUNGEONS");searchInput.selected=18;
-    } else if(name=="detail"||name=="detail-hardware"||name=="detail-action") {
+    } else if(name=="detail"||name=="detail-hardware"||name=="detail-action"||name.rfind("tile-",0)==0) {
         detailOpen=true;detailSection=Section::library;detailChoice=name=="detail-hardware"?2:0;
-        if(name=="detail-action")detailAction="Add to Home Screen";
+        previewTileAvailable=name!="detail"&&name!="detail-hardware";
+        using Stage=opennow::ui::HomeTile::Stage;
+        auto& tile=publishedTile;
+        tile.game=publishedLibrary.games[0];
+        if(name=="tile-progress"){tile.stage=Stage::working;tile.step="Downloading the background";tile.percent=33;}
+        if(name=="tile-success"){tile.stage=Stage::done;tile.ok=true;tile.message="Tile created. Rescan homebrew in ShadowMountPlus.";std::snprintf(tile.titleId,sizeof(tile.titleId),"PPSA99214");}
+        if(name=="tile-failure"){tile.stage=Stage::done;tile.error=-2;tile.message="Could not download or write the game's artwork. Check connection and free space.";}
     } else if(name.rfind("settings",0)==0) {
         section=Section::settings;
         publishedSettings.saved=true;
@@ -902,7 +982,7 @@ int main(int argc,char** argv) {
         if(name=="settings-account"||name=="settings-signout"){settingsPane=SettingsPane::account;settingsContent=true;}
         if(name=="settings-signout")confirmSignOut=true;
         if(name=="settings-about")settingsPane=SettingsPane::about;
-        if(name=="settings-controller"){settingsPane=SettingsPane::controller;settingsContent=true;controllerSettings.persistSupported=true;controllerSettings.leftDeadzone=8;}
+        if(name=="settings-controller"){settingsPane=SettingsPane::controller;settingsContent=true;draft.controller_left_deadzone=8;}
         if(name=="settings-save-error"){settingsContent=true;publishedSettings.saved=false;publishedSettings.saveError=28;}
         using opennow::ui::StreamRow;
         const auto custom=opennow::StreamSettings{2560,1440,90,75000,opennow::VideoMode::hevcMain10HdrHardware,opennow::QualityMode::original,opennow::NetworkPolicy::fixed};
@@ -1004,6 +1084,8 @@ int main(int argc,char** argv) {
     if(artResult==0)artCache=&cache;
     ps5::demo::run(draw,"OpenNOW PS5 prototype");
     cache.requestStop();
+    tileCancel.store(true);
+    if(tileThread)(void)scePthreadJoin(tileThread,nullptr);
     if(artResult==0)(void)scePthreadJoin(artThread,nullptr);
     if(threadResult==0)(void)scePthreadJoin(thread,nullptr);
     artCache=nullptr;

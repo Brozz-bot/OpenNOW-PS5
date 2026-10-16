@@ -698,7 +698,7 @@ void detail(Canvas& c, const Model& m) {
     drawWrapped(c,Face::semibold,15,ix,y,21,"The rig decides the final stream. These are requests, shown before launch only.",iw,2,muted);
     const Hint left[]={{Glyph::circle,"Back"},{Glyph::dpad,count>1?"Store \xC2\xB7 stream":"Stream"}};
     const Hint right[]={{Glyph::triangle,m.detailAction?m.detailAction:""},{Glyph::cross,play.text}};
-    chrome(c,m,"",false,left,2,m.detailAction?right:right+1,m.detailAction?2:1);
+    chrome(c,m,"",false,left,2,m.detailAction?right:right+1,m.detailAction?2:1,m.tile.stage==HomeTile::Stage::hidden);
 }
 
 void rowFrame(Canvas& c, float x, float y, float w, float h, bool focused) {
@@ -795,17 +795,31 @@ void draftCard(Canvas& c, const Model& m) {
     c.roundRectStroke(x,y,w,h,26,1,face,seamAlpha);
     char text[96];
     float at=y+30;
-    eyebrow(c,ix,at,"Requested",accent,13);at+=30;
-    std::snprintf(text,sizeof(text),"%d\xC3\x97%d \xC2\xB7 %d FPS",d.width,d.height,d.fps);
-    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
-    std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s \xC2\xB7 %d Mb/s",d.tenBit()?"HEVC":"H.264",d.hdr()?"HDR":"SDR",d.bitrate_kbps/1000);
-    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
-    fitted(c,Face::mono,15,ix,at,d.hardware()?"Hardware decoding":"Software decoding",iw,face);at+=26;
-    std::snprintf(text,sizeof(text),"%s audio",d.audio_mode==audio::Mode::automatic?"Auto":d.audio_mode==audio::Mode::stereo?"Stereo":audio::modeLabel(d.audio_mode));
-    fitted(c,Face::mono,15,ix,at,text,iw,face);at+=22;
-    rule(c,ix,at,iw);at+=26;
-    eyebrow(c,ix,at,"This PS5 output",muted,13);at+=14;
-    at+=drawWrapped(c,Face::mono,14,ix,at,22,outputLabel(m),iw,2,muted)*22.0f+12;
+    const bool input=m.pane==SettingsPane::controller;
+    eyebrow(c,ix,at,input?"Next stream":"Requested",accent,13);at+=30;
+    if(input) {
+        std::snprintf(text,sizeof(text),"Dead zones L %d%% \xC2\xB7 R %d%%",d.controller_left_deadzone,d.controller_right_deadzone);
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+        std::snprintf(text,sizeof(text),"Vibration %d%%",d.vibration_intensity);
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+        std::snprintf(text,sizeof(text),"Mouse speed %d%%",d.mouse_sensitivity);
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+        fitted(c,Face::mono,15,ix,at,d.persist_game_settings?"Keep game settings":"Fresh game settings",iw,face);at+=22;
+        rule(c,ix,at,iw);at+=26;
+        eyebrow(c,ix,at,"Applies to",muted,13);at+=14;
+        at+=drawWrapped(c,Face::semibold,14,ix,at,22,"Every controller on this PS5, from the next stream",iw,2,muted)*22.0f+12;
+    } else {
+        std::snprintf(text,sizeof(text),"%d\xC3\x97%d \xC2\xB7 %d FPS",d.width,d.height,d.fps);
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+        std::snprintf(text,sizeof(text),"%s \xC2\xB7 %s \xC2\xB7 %d Mb/s",d.tenBit()?"HEVC":"H.264",d.hdr()?"HDR":"SDR",d.bitrate_kbps/1000);
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=26;
+        fitted(c,Face::mono,15,ix,at,d.hardware()?"Hardware decoding":"Software decoding",iw,face);at+=26;
+        std::snprintf(text,sizeof(text),"%s audio",d.audio_mode==audio::Mode::automatic?"Auto":d.audio_mode==audio::Mode::stereo?"Stereo":audio::modeLabel(d.audio_mode));
+        fitted(c,Face::mono,15,ix,at,text,iw,face);at+=22;
+        rule(c,ix,at,iw);at+=26;
+        eyebrow(c,ix,at,"This PS5 output",muted,13);at+=14;
+        at+=drawWrapped(c,Face::mono,14,ix,at,22,outputLabel(m),iw,2,muted)*22.0f+12;
+    }
     const auto s=draftStatus(m);
     c.roundRect(ix-8,at,iw+16,y+h-14-at,18,s.tone,20);
     c.disc(ix+8,at+24,5,s.tone);
@@ -1060,26 +1074,24 @@ void slider(Canvas& c, float rightX, float cy, int value, const ControllerRange&
     label(c,Face::black,20,rightX-88,cy,text,face);
 }
 void controllerPane(Canvas& c, const Model& m) {
-    const auto& s=m.controller;
-    struct Row { const char* title; const char* description; int value; };
-    const Row rows[]={
-        {"Left stick dead zone","Ignore small movements from stick drift. Default: 5%.",s.leftDeadzone},
-        {"Right stick dead zone","Ignore small movements from stick drift. Default: 5%.",s.rightDeadzone},
-        {"Vibration intensity","How strongly game rumble plays on the controller. 0% turns it off. Default: 100%.",s.vibration},
-        {"Mouse sensitivity","Pointer speed when the controller moves the mouse. Default: 100%.",s.mouseSensitivity}};
+    StreamSettings draft=m.draft, saved=m.defaults;
+    constexpr const char* titles[]={"Left stick dead zone","Right stick dead zone","Vibration intensity","Mouse sensitivity"};
+    constexpr const char* descriptions[]={"Ignore small movements from stick drift. Default: 5%.","Ignore small movements from stick drift. Default: 5%.",
+        "How strongly game rumble plays on the controller. 0% turns it off. Default: 100%.","Pointer speed when the controller moves the mouse. Default: 100%."};
     float y=rowsTop;
     const float h=84, rx=rowsX+rowsW-22;
     for(unsigned i=0;i<4;++i,y+=h+4) {
-        const bool focused=m.settingsContent&&m.settingsRow==i;
-        rowFrame(c,rowsX,y,rowsW,h,focused);
-        rowText(c,rowsX,y,h,rows[i].title,rows[i].description,muted,false,face,760);
-        slider(c,rx,y+h/2,rows[i].value,controllerRanges[i],focused);
+        const auto row=static_cast<ControllerRow>(i);
+        const int value=*controllerValue(draft,row);
+        rowFrame(c,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==i);
+        rowText(c,rowsX,y,h,titles[i],descriptions[i],muted,value!=*controllerValue(saved,row),face,760);
+        slider(c,rx,y+h/2,value,controllerRanges[i],m.settingsContent&&m.settingsRow==i);
     }
-    if(!s.persistSupported)return;
     const unsigned row=static_cast<unsigned>(ControllerRow::persistGameSettings);
     rowFrame(c,rowsX,y,rowsW,h,m.settingsContent&&m.settingsRow==row);
-    rowText(c,rowsX,y,h,"Persistent in-game settings","Keep your in-game graphics settings between sessions for supported games. Applies to new sessions.",muted,false,face,1000);
-    toggle(c,rx,y+h/2,s.persistGameSettings);
+    rowText(c,rowsX,y,h,"Persistent in-game settings","Keep in-game graphics settings between sessions. Only affects games that support it; applies to new sessions.",
+        muted,draft.persist_game_settings!=saved.persist_game_settings,face,1000);
+    toggle(c,rx,y+h/2,draft.persist_game_settings);
 }
 
 void sheetBackdrop(Canvas& c) {c.roundRect(0,0,1920,1080,0,black,166);}
@@ -1222,10 +1234,65 @@ void numberEditor(Canvas& c, const Model& m) {
     hintRow(c,r,2,x+w-48-hintRowWidth(r,2),y+h-50);
 }
 
+void homeTileSheet(Canvas& c, const Model& m) {
+    const auto& t=m.tile;
+    const bool working=t.stage==HomeTile::Stage::working;
+    const Color tone=working?accent:t.ok?mint:coral;
+    sheetBackdrop(c);
+    sheet(c,48,48,620,984,40);
+    c.disc(113,113,32,tone);
+    if(working){c.roundRectStroke(99,99,28,28,7,3,faceText);c.roundRect(107,107,12,12,3,faceText);}
+    else if(t.ok){c.line(100,114,109,123,4.5f,faceText);c.line(109,123,127,103,4.5f,faceText);}
+    else {c.roundRect(110,96,6,22,3,faceText);c.disc(113,128,3.5f,faceText);}
+    eyebrow(c,81,178,working?"Add to Home Screen":t.ok?"Tile ready":"Tile not created",tone,15,553);
+    const unsigned lines=drawWrapped(c,Face::black,40,81,196,48,t.game.title,553,3,face);
+    float y=196+lines*48.0f+6;
+    label(c,Face::bold,18,81,y+12,storeName(t.game.store),muted);
+    y+=56;
+    if(working) {
+        label(c,Face::black,20,81,y,t.cancelling?"Cancelling\xE2\x80\xA6":t.step,face);
+        char percent[8];std::snprintf(percent,sizeof(percent),"%u%%",std::min(t.percent,100U));
+        labelRight(c,Face::mono,16,634,y,percent,muted);
+        y+=28;
+        c.roundRect(81,y,553,8,4,face,41);
+        c.roundRect(81,y,std::max(8.0f,553.0f*std::min(t.percent,100U)/100.0f),8,4,accent);
+        y+=42;
+        drawWrapped(c,Face::semibold,18,81,y,27,"OpenNOW downloads the cover and hero art and writes a launcher tile to this PS5. Keep OpenNOW open until it finishes.",553,4,muted);
+        actionButton(c,{Glyph::circle,t.cancelling?"Cancelling\xE2\x80\xA6":"Cancel"},81,876,72,553,20,30,!t.cancelling);
+        if(!t.cancelling)focusFrame(c,81,876,553,72,26);
+        if(!t.cancelling){const Hint h[]={{Glyph::circle,"Cancel"}};hintRow(c,h,1,81,984);}
+        return;
+    }
+    y+=drawWrapped(c,Face::semibold,20,81,y,30,t.message,553,4,t.ok?face:coral)*30.0f+24;
+    if(t.ok&&*t.titleId) {
+        rule(c,81,y,553);y+=32;
+        eyebrow(c,81,y,"Title ID",muted,13);
+        labelRight(c,Face::mono,18,634,y,t.titleId,face,0.06f);
+        y+=36;
+    } else if(!t.ok&&t.error) {
+        char code[32];std::snprintf(code,sizeof(code),"Error %d",t.error);
+        rule(c,81,y,553);y+=32;
+        eyebrow(c,81,y,"Details",muted,13);
+        labelRight(c,Face::mono,18,634,y,code,face);
+        y+=36;
+    }
+    if(t.ok) {
+        y+=12;
+        c.roundRect(81,y,553,96,22,mint,26);
+        c.roundRectStroke(81,y,553,96,22,1,mint,110);
+        eyebrow(c,105,y+28,"Next step",mint,13);
+        drawWrapped(c,Face::black,18,105,y+44,26,"Rescan homebrew in ShadowMountPlus to show the tile",505,2,face);
+    }
+    actionButton(c,{Glyph::cross,"Done",true},81,876,72,553,20,30);
+    focusFrame(c,81,876,553,72,26);
+    const Hint h[]={{Glyph::cross,"Done"},{Glyph::circle,"Close"}};
+    hintRow(c,h,2,81,984);
+}
+
 void settings(Canvas& c, const Model& m) {
     screenBase(c,shell);
     settingsSidebar(c,m);
-    if(m.pane==SettingsPane::stream)draftCard(c,m);
+    if(m.pane==SettingsPane::stream||m.pane==SettingsPane::controller)draftCard(c,m);
     panel(c,480,124,1344,792,40);
     label(c,Face::black,34,537,175,paneName(m.pane),face,-0.01f);
     switch(m.pane) {
@@ -1237,24 +1304,27 @@ void settings(Canvas& c, const Model& m) {
     case SettingsPane::about: aboutPane(c);break;
     }
     const bool dialog=settingsDialog(m);
-    const unsigned rows=settingsRows(m.pane,m.controller);
+    const unsigned rows=settingsRows(m.pane);
     Hint left[2]{},right[2]{};
     unsigned l=0,r=0;
     if(!m.settingsContent) {
         left[l++]={Glyph::circle,"Close app"};
         if(rows)right[r++]={Glyph::cross,"Select"};
-    } else if(m.pane==SettingsPane::stream) {
-        const auto row=static_cast<StreamRow>(m.settingsRow);
+    } else if(m.pane==SettingsPane::stream||m.pane==SettingsPane::controller) {
         const bool canSave=changedRows(m.draft,m.defaults)&&!settingsProblem(m.draft,m.draftAvailable);
         left[l++]={Glyph::circle,"Sections"};
         left[l++]={Glyph::square,"Revert"};
         right[r++]={Glyph::options,"Save",Glyph::none,nullptr,canSave?mint:muted};
-        if(row==StreamRow::resolution||row==StreamRow::fps||row==StreamRow::bitrate||row==StreamRow::reset)
-            right[r++]={Glyph::cross,row==StreamRow::reset?"Reset":"Edit"};
+        if(m.pane==SettingsPane::controller)
+            right[r++]=m.settingsRow<static_cast<unsigned>(ControllerRow::persistGameSettings)?Hint{Glyph::dpad,"Adjust"}:Hint{Glyph::cross,"Toggle"};
+        else {
+            const auto row=static_cast<StreamRow>(m.settingsRow);
+            if(row==StreamRow::resolution||row==StreamRow::fps||row==StreamRow::bitrate||row==StreamRow::reset)
+                right[r++]={Glyph::cross,row==StreamRow::reset?"Reset":"Edit"};
+        }
     } else {
         left[l++]={Glyph::circle,"Sections"};
-        const bool adjust=m.pane==SettingsPane::controller&&m.settingsRow<static_cast<unsigned>(ControllerRow::persistGameSettings);
-        right[r++]=adjust?Hint{Glyph::dpad,"Adjust"}:Hint{Glyph::cross,"Select"};
+        right[r++]={Glyph::cross,"Select"};
     }
     chrome(c,m,"Settings",true,left,l,right,r,!dialog);
     if(m.edit.open())numberEditor(c,m);
@@ -1597,23 +1667,15 @@ const CloudView& catalogFor(Section section,const CloudView& session,const Cloud
     return section==Section::library?library:session;
 }
 
-unsigned settingsRows(SettingsPane pane, const ControllerSettings& controller) noexcept {
+unsigned settingsRows(SettingsPane pane) noexcept {
     switch(pane) {
     case SettingsPane::stream: return static_cast<unsigned>(StreamRow::count);
-    case SettingsPane::controller: return static_cast<unsigned>(controller.persistSupported?ControllerRow::count:ControllerRow::persistGameSettings);
+    case SettingsPane::controller: return static_cast<unsigned>(ControllerRow::count);
     case SettingsPane::cache: return 2;
     case SettingsPane::account: return 1;
     case SettingsPane::display: case SettingsPane::about: return 0;
     }
     return 0;
-}
-
-void adjustController(ControllerSettings& settings, unsigned row, int direction) noexcept {
-    if(row==static_cast<unsigned>(ControllerRow::persistGameSettings)){if(direction)settings.persistGameSettings=direction>0;return;}
-    if(row>static_cast<unsigned>(ControllerRow::persistGameSettings))return;
-    int* values[]={&settings.leftDeadzone,&settings.rightDeadzone,&settings.vibration,&settings.mouseSensitivity};
-    const auto& range=controllerRanges[row];
-    *values[row]=std::clamp(*values[row]+direction*range.step,range.min,range.max);
 }
 
 unsigned qualifiedPresets(StreamProfile* out, unsigned capacity, bool (*available)(const StreamSettings&)) noexcept {
@@ -1641,7 +1703,10 @@ void render(Canvas& c, const Model& m) noexcept {
         else storeScreen(c,m);
         break;
     case Screen::search: searchScreen(c,m);break;
-    case Screen::detail: detail(c,m);break;
+    case Screen::detail:
+        detail(c,m);
+        if(m.tile.stage!=HomeTile::Stage::hidden)homeTileSheet(c,m);
+        break;
     case Screen::settings: settings(c,m);break;
     case Screen::launching: case Screen::connecting: progress(c,m);break;
     case Screen::cleanupFailed: case Screen::streamEnded: case Screen::launchFailed: failure(c,m);break;

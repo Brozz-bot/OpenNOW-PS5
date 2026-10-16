@@ -10,6 +10,26 @@ constexpr unsigned rowBit(StreamRow row) {return 1U<<static_cast<unsigned>(row);
 constexpr unsigned audioBit=1U<<31;
 constexpr unsigned controllerBit=1U<<30,mouseBit=1U<<29,persistenceBit=1U<<28;
 struct StreamCaps { bool h264Hardware=false, hevcSdr=false, hevcHdr=false; };
+enum class ControllerRow : unsigned { leftDeadzone, rightDeadzone, vibration, mouseSensitivity, persistGameSettings, count };
+struct ControllerRange { int min, max, step; };
+constexpr ControllerRange controllerRanges[]={{0,50,1},{0,50,1},{0,100,10},{10,300,10}};
+inline int* controllerValue(StreamSettings& s,ControllerRow row) noexcept {
+    switch(row) {
+    case ControllerRow::leftDeadzone: return &s.controller_left_deadzone;
+    case ControllerRow::rightDeadzone: return &s.controller_right_deadzone;
+    case ControllerRow::vibration: return &s.vibration_intensity;
+    case ControllerRow::mouseSensitivity: return &s.mouse_sensitivity;
+    default: return nullptr;
+    }
+}
+inline StreamSettings stepController(StreamSettings s,ControllerRow row,int direction) noexcept {
+    if(row==ControllerRow::persistGameSettings){if(direction)s.persist_game_settings=direction>0;return s;}
+    int* value=controllerValue(s,row);
+    if(!value)return s;
+    const auto& range=controllerRanges[static_cast<unsigned>(row)];
+    *value=std::clamp(*value+direction*range.step,range.min,range.max);
+    return s;
+}
 
 inline int maxWidth(const StreamSettings& s) noexcept {return s.hardware()?3840:1920;}
 inline int maxHeight(const StreamSettings& s) noexcept {return s.hardware()?2160:1080;}
